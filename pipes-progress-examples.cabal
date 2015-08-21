@@ -1,0 +1,38 @@
+name:                pipes-progress-examples
+version:             0.1.0.0
+synopsis:            Examples for the pipes-progress library
+homepage:            https://github.com/jonathanknowles/pipes-progress-examples
+license:             BSD3
+license-file:        LICENCE
+author:              Jonathan Knowles
+copyright:           Jonathan Knowles
+maintainer:          mail@jonathanknowles.net
+category:            Data
+build-type:          Simple
+cabal-version:       >=1.10
+-- description:
+-- extra-source-files:
+
+library
+    exposed-modules:
+        Pipes.Progress.Examples
+    -- other-modules:
+    -- other-extensions:
+    build-depends:
+        base >=4.8 && <4.9,
+        bytestring,
+        cryptohash,
+        pipes,
+        pipes-bytestring,
+        pipes-progress,
+        text,
+        unix
+    hs-source-dirs:
+        source
+    default-language:
+        Haskell2010
+    ghc-options:
+        -O3
+        -threaded
+        -rtsopts
+        -with-rtsopts=-N
