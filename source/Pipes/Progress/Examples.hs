@@ -11,7 +11,7 @@ import Control.Exception               (evaluate, try, throwIO)
 import Control.Monad
 import Data.Monoid
 import Data.Text                       (Text)
-import Pipes
+import Pipes                    hiding (every)
 import Pipes.ByteString         hiding (count, find, take, takeWhile, map)
 import Pipes.Prelude            hiding (findi, fromHandle, toHandle, mapM_, show)
 import Pipes.Progress
@@ -145,15 +145,15 @@ updateProgress p t b = p
 main :: IO ()
 main = do
     hSetBuffering S.stdout NoBuffering
-    copyFile (terminalMonitor 0.1) "/home/jsk/scratch/test/1GiB" "/dev/null"
-    hash <- hashFile (terminalMonitor 0.1) "/home/jsk/scratch/test/1GiB"
+    copyFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB" "/dev/null"
+    hash <- hashFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB"
     Prelude.print (B.length hash)
-    --copyFile (terminalMonitor 0.1) "/mnt/testdisk/4GiB" "/mnt/testdisk/target"
-    --copyFile (terminalMonitor 0.1) "/mnt/testdisk/4GiB" "/dev/null"
-    --copyFile (terminalMonitor 0.1) "/mnt/testdisk/1GiB" "/dev/null"
+    --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/mnt/testdisk/target"
+    --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/dev/null"
+    --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/1GiB" "/dev/null"
 
-terminalMonitor :: Pretty a => Period -> Monitor a
-terminalMonitor p = Monitor p $ forever $ do
+terminalMonitor :: Pretty a => Monitor a
+terminalMonitor = forever $ do
     update <- await
     liftIO $
         (if isFinal update then T.putStrLn else T.putStr)
@@ -168,7 +168,7 @@ transferData
     -> Handle
     -> IO ()
 transferData m i o =
-    withMonitor (mapMonitor dataTransferProgress m) byteCounter $ \p ->
+    withMonitor (map (fmap dataTransferProgress) >-> m) byteCounter $ \p ->
         runEffect $ fromHandle i >-> p >-> toHandle o
 
 chunkLength :: ByteString -> ByteCount
@@ -189,7 +189,7 @@ copyFile m s t =
     withFile s ReadMode $ \i ->
     withFile t WriteMode $ \o ->
     getFileSize s >>= \b ->
-        transferData (mapMonitor (fileCopyProgress b) m) i o
+        transferData (map (fmap $ fileCopyProgress b) >-> m) i o
 
 data FileCopyProgress = FileCopyProgress
     { fcpBytesCopied    :: ByteCount
@@ -208,7 +208,7 @@ hashFile
 hashFile m f =
     withFile f ReadMode $ \i ->
     getFileSize f >>= \b ->
-    withMonitor (mapMonitor (fileHashProgress b) m) byteCounter $ \p ->
+    withMonitor (map (fmap $ fileHashProgress b) >-> m) byteCounter $ \p ->
         sha256 $ fromHandle i >-> p
 
 data FileHashProgress = FileHashProgress
