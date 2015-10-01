@@ -144,7 +144,9 @@ updateProgress p t b = p
 
 main :: IO ()
 main = do
+    putStrLn "starting"
     hSetBuffering S.stdout NoBuffering
+    hash <- hashFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
     copyFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB" "/dev/null"
     hash <- hashFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB"
     Prelude.print (B.length hash)
