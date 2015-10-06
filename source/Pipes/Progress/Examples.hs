@@ -257,6 +257,9 @@ readFile path = P.Select $ PS.withFile path S.ReadMode fromHandle
 readFiles :: PS.MonadSafe m => P.ListT m FilePath -> P.ListT m (FilePath, P.ListT m FileChunk)
 readFiles paths = paths >>= \path -> pure (path, readFile path)
 
+hashFiles :: Monad m => P.ListT m (FilePath, P.ListT m FileChunk) -> m FileHash
+hashFiles = hashFiles'' . hashFiles'
+
 hashFiles' :: Monad m => P.ListT m (FilePath, P.ListT m FileChunk) -> P.ListT m (FilePath, FileHash)
 hashFiles' stream = do
     (path, chunks) <- stream
@@ -266,12 +269,9 @@ hashFiles' stream = do
 hashFiles'' :: Monad m => P.ListT m (FilePath, FileHash) -> m FileHash
 hashFiles'' stream = P.fold mappend mempty id (P.enumerate stream >-> P.map snd)
 
-hashFiles :: Monad m => P.ListT m (FilePath, P.ListT m FileChunk) -> m FileHash
-hashFiles = hashFiles'' . hashFiles'
-
-hashFileTree :: PS.MonadSafe m => FilePath -> m FileHash
-hashFileTree = hashFiles . readFiles . files where
-    files path = P.Select $
+hashFileTree :: FilePath -> IO FileHash
+hashFileTree = PS.runSafeT . hashFiles . readFiles . listFiles where
+    listFiles path = P.Select $
         P.enumerate (PF.descendants PF.RootToLeaf path)
             >-> PF.onlyFiles
 
