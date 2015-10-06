@@ -24,7 +24,9 @@ library
         cryptohash,
         pipes,
         pipes-bytestring,
+        pipes-filesystem,
         pipes-progress,
+        pipes-safe,
         text,
         unix
     hs-source-dirs:

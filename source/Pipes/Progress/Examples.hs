@@ -1,7 +1,10 @@
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE RankNTypes                 #-}
+{-# LANGUAGE TupleSections              #-}
 
 module Pipes.Progress.Examples where
 
@@ -15,17 +18,24 @@ import Pipes                    hiding (every)
 import Pipes.ByteString         hiding (count, find, take, takeWhile, map)
 import Pipes.Prelude            hiding (findi, fromHandle, toHandle, mapM_, show)
 import Pipes.Progress
-import Prelude                  hiding (map, take, takeWhile)
-import System.IO
+import Prelude                  hiding (map, readFile, take, takeWhile)
 import System.Posix             hiding (ByteCount)
+import Text.Printf (printf)
 import Text.Pretty
 
 import qualified Crypto.Hash.SHA256 as SHA256
+import qualified Data.Bits          as Bits
 import qualified Data.ByteString    as B
 import qualified Data.List          as L
 import qualified Data.Text          as T
 import qualified Data.Text.IO       as T
 import qualified Data.Time.Human    as H
+import qualified Data.Word          as W
+import qualified Pipes              as P
+import qualified Pipes.FileSystem   as PF
+import qualified Pipes.Prelude      as P
+import qualified Pipes.Safe         as PS
+import qualified Pipes.Safe.Prelude as PS
 import qualified System.IO          as S
 import qualified GHC.IO.Exception   as G
 
@@ -145,11 +155,11 @@ updateProgress p t b = p
 main :: IO ()
 main = do
     putStrLn "starting"
-    hSetBuffering S.stdout NoBuffering
+    S.hSetBuffering S.stdout S.NoBuffering
     hash <- hashFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
     copyFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB" "/dev/null"
     hash <- hashFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB"
-    Prelude.print (B.length hash)
+    Prelude.print hash
     --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/mnt/testdisk/target"
     --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/dev/null"
     --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/1GiB" "/dev/null"
@@ -166,8 +176,8 @@ byteCounter = Counter 0 $ map chunkLength >-> accumulate 0
 
 transferData
     :: Monitor DataTransferProgress
-    -> Handle
-    -> Handle
+    -> S.Handle
+    -> S.Handle
     -> IO ()
 transferData m i o =
     withMonitor (map (fmap dataTransferProgress) >-> m) byteCounter $ \p ->
@@ -188,8 +198,8 @@ copyFile
     -> FilePath
     -> IO ()
 copyFile m s t =
-    withFile s ReadMode $ \i ->
-    withFile t WriteMode $ \o ->
+    S.withFile s S.ReadMode $ \i ->
+    S.withFile t S.WriteMode $ \o ->
     getFileSize s >>= \b ->
         transferData (map (fmap $ fileCopyProgress b) >-> m) i o
 
@@ -203,12 +213,24 @@ fileCopyProgress limit p = FileCopyProgress
     { fcpBytesCopied    =         dtpBytesTransferred p
     , fcpBytesRemaining = limit - dtpBytesTransferred p }
 
+data FileHash = FileHash !ByteString
+
+instance Monoid FileHash where
+    mempty = FileHash $ B.replicate 32 0
+    mappend (FileHash a) (FileHash b) = FileHash $ B.pack $ B.zipWith Bits.xor a b
+
+instance Show FileHash where
+    show (FileHash a) = Prelude.concatMap showHex $ B.unpack a
+
+showHex :: W.Word8 -> String
+showHex = printf "%02x"
+
 hashFile
     :: Monitor FileHashProgress
     -> FilePath
-    -> IO ByteString
-hashFile m f =
-    withFile f ReadMode $ \i ->
+    -> IO FileHash
+hashFile m f = --fmap FileHash $
+    S.withFile f S.ReadMode $ \i ->
     getFileSize f >>= \b ->
     withMonitor (map (fmap $ fileHashProgress b) >-> m) byteCounter $ \p ->
         sha256 $ fromHandle i >-> p
@@ -222,8 +244,45 @@ fileHashProgress limit p = FileHashProgress
     { fhpBytesHashed    =         p
     , fhpBytesRemaining = limit - p }
 
-data FileHash = FileHash !ByteString
+type FileCount = Integer
+type FileChunk = ByteString
 
-sha256 :: Monad m => Producer ByteString m () -> m ByteString
-sha256 = fold SHA256.update SHA256.init SHA256.finalize
+integers :: Monad m => Integer -> P.ListT m Integer
+integers from = P.Select $ loop from where
+    loop from = yield from >> loop (from + 1)
+
+readFile :: PS.MonadSafe m => FilePath -> P.ListT m FileChunk
+readFile path = P.Select $ PS.withFile path S.ReadMode fromHandle
+
+readFiles :: PS.MonadSafe m => P.ListT m FilePath -> P.ListT m (FilePath, P.ListT m FileChunk)
+readFiles paths = paths >>= \path -> pure (path, readFile path)
+
+hashFiles' :: Monad m => P.ListT m (FilePath, P.ListT m FileChunk) -> P.ListT m (FilePath, FileHash)
+hashFiles' stream = do
+    (path, chunks) <- stream
+    hash <- lift $ sha256 $ P.enumerate chunks
+    pure (path, hash)
+
+hashFiles'' :: Monad m => P.ListT m (FilePath, FileHash) -> m FileHash
+hashFiles'' stream = P.fold mappend mempty id (P.enumerate stream >-> P.map snd)
+
+hashFiles :: Monad m => P.ListT m (FilePath, P.ListT m FileChunk) -> m FileHash
+hashFiles = hashFiles'' . hashFiles'
+
+hashFileTree :: PS.MonadSafe m => FilePath -> m FileHash
+hashFileTree = hashFiles . readFiles . files where
+    files path = P.Select $
+        P.enumerate (PF.descendants PF.RootToLeaf path)
+            >-> PF.onlyFiles
+
+zipListT :: Monad m => P.ListT m a -> P.ListT m b -> P.ListT m (a, b)
+zipListT xs ys = P.Select $ P.zip (P.enumerate xs) (P.enumerate ys)
+
+data FileTreeHashProgress = FileTreeHashProgress
+    { fthpBytesHashed :: ByteCount
+    , fthpFilesHashed :: Integer
+    , fthpFileCurrent :: Maybe FilePath }
+
+sha256 :: Monad m => Producer FileChunk m () -> m FileHash
+sha256 = fmap FileHash . fold SHA256.update SHA256.init SHA256.finalize
 
