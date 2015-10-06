@@ -229,7 +229,7 @@ hashFile
     :: Monitor FileHashProgress
     -> FilePath
     -> IO FileHash
-hashFile m f = --fmap FileHash $
+hashFile m f =
     S.withFile f S.ReadMode $ \i ->
     getFileSize f >>= \b ->
     withMonitor (map (fmap $ fileHashProgress b) >-> m) byteCounter $ \p ->
