@@ -23,6 +23,7 @@ import System.Posix             hiding (ByteCount)
 import Text.Printf (printf)
 import Text.Pretty
 
+import qualified Control.Arrow      as A
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.Bits          as Bits
 import qualified Data.ByteString    as B
@@ -156,9 +157,9 @@ main :: IO ()
 main = do
     putStrLn "starting"
     S.hSetBuffering S.stdout S.NoBuffering
-    hash <- hashFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
+    hash <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
     copyFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB" "/dev/null"
-    hash <- hashFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB"
+    hash <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB"
     Prelude.print hash
     --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/mnt/testdisk/target"
     --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/dev/null"
@@ -225,15 +226,15 @@ instance Show FileHash where
 showHex :: W.Word8 -> String
 showHex = printf "%02x"
 
-hashFile
+hashFileOld
     :: Monitor FileHashProgress
     -> FilePath
     -> IO FileHash
-hashFile m f =
+hashFileOld m f =
     S.withFile f S.ReadMode $ \i ->
     getFileSize f >>= \b ->
     withMonitor (map (fmap $ fileHashProgress b) >-> m) byteCounter $ \p ->
-        sha256 $ fromHandle i >-> p
+        hashFileChunks $ fromHandle i >-> p
 
 data FileHashProgress = FileHashProgress
     { fhpBytesHashed    :: ByteCount
@@ -244,45 +245,102 @@ fileHashProgress limit p = FileHashProgress
     { fhpBytesHashed    =         p
     , fhpBytesRemaining = limit - p }
 
-type FileCount = Integer
-type FileChunk = ByteString
+data NestedStreamEvent a b
+    = NestedStreamStart a
+    | NestedStreamChunk b
+    | NestedStreamEnd
 
-integers :: Monad m => Integer -> P.ListT m Integer
-integers from = P.Select $ loop from where
-    loop from = yield from >> loop (from + 1)
+flattenNestedStream
+    :: Monad m
+    => Producer (a, Producer b m r) m r
+    -> Producer (NestedStreamEvent a b) m r
+flattenNestedStream abs = for abs $ \(a, bs) -> do
+    yield                $ NestedStreamStart a
+    for bs $ \b -> yield $ NestedStreamChunk b
+    yield                  NestedStreamEnd
 
-readFile :: PS.MonadSafe m => FilePath -> P.ListT m FileChunk
-readFile path = P.Select $ PS.withFile path S.ReadMode fromHandle
+nestFlattenedStream
+    :: Monad m
+    => Producer (NestedStreamEvent a b) m r
+    -> Producer (a, Producer b m r) m r
+nestFlattenedStream xs = undefined
 
-readFiles :: PS.MonadSafe m => P.ListT m FilePath -> P.ListT m (FilePath, P.ListT m FileChunk)
-readFiles paths = paths >>= \path -> pure (path, readFile path)
+nest :: Monad m => Pipe (NestedStreamEvent a b) (a, Producer b m r) m r
+nest = undefined
 
-hashFiles :: Monad m => P.ListT m (FilePath, P.ListT m FileChunk) -> m FileHash
-hashFiles = hashFiles'' . hashFiles'
 
-hashFiles' :: Monad m => P.ListT m (FilePath, P.ListT m FileChunk) -> P.ListT m (FilePath, FileHash)
-hashFiles' stream = do
-    (path, chunks) <- stream
-    hash <- lift $ sha256 $ P.enumerate chunks
-    pure (path, hash)
 
-hashFiles'' :: Monad m => P.ListT m (FilePath, FileHash) -> m FileHash
-hashFiles'' stream = P.fold mappend mempty id (P.enumerate stream >-> P.map snd)
+-- thoughts
+--
+-- Producer (a, Producer b m r) m r -> Producer (NestedStreamEvent a b) m r
+--
+-- Producer (NestedStreamEvent a b) m r -> Producer (a, Producer b m r) m r
+
+nestProducers :: Monad m
+              => (a -> Producer b m ())
+              -> (b -> Producer c m ())
+              -> a -> Producer (b, Producer c m ()) m ()
+nestProducers aToBs bToCs a =
+    P.map (A.second P.enumerate) <-< (P.enumerate . nestLists x y) a
+    where
+        x = P.Select . aToBs
+        y = P.Select . bToCs
+
+nestLists :: Monad m
+          => (a -> ListT m b)
+          -> (b -> ListT m c)
+          -> a -> ListT m (b, ListT m c)
+nestLists aToBs bToCs =
+    aToBs >=> \b -> pure (b, bToCs b)
+
+nestedProducersToLists :: Monad m
+                       => Producer (a, Producer b m ()) m ()
+                       -> ListT m (a, ListT m b)
+nestedProducersToLists s = P.Select $ s >-> P.map (A.second P.Select)
+
+nestedListsToProducers :: Monad m
+                       => ListT m (a, ListT m b)
+                       -> Producer (a, Producer b m ()) m ()
+nestedListsToProducers s = P.enumerate s >-> P.map (A.second P.enumerate)
+
+data FileStreamEvent =
+    FileOpenEvent FilePath | FileChunkEvent FileChunk | FileCloseEvent
 
 hashFileTree :: FilePath -> IO FileHash
-hashFileTree = PS.runSafeT . hashFiles . readFiles . listFiles where
-    listFiles path = P.Select $
-        P.enumerate (PF.descendants PF.RootToLeaf path)
-            >-> PF.onlyFiles
+hashFileTree = PS.runSafeT . hashFiles . readFiles
+    where
+        monitorStuff :: Monad m => Pipe x x m ()
+        monitorStuff = P.cat
 
-zipListT :: Monad m => P.ListT m a -> P.ListT m b -> P.ListT m (a, b)
-zipListT xs ys = P.Select $ P.zip (P.enumerate xs) (P.enumerate ys)
+listDescendantFiles :: PS.MonadSafe m => FilePath -> Producer FilePath m ()
+listDescendantFiles path = PF.onlyFiles <-< P.enumerate (PF.descendants PF.RootToLeaf path)
+
+readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
+readFile path = PS.withFile path S.ReadMode fromHandle
+
+readFiles :: PS.MonadSafe m => FilePath -> Producer (FilePath, Producer FileChunk m ()) m ()
+readFiles = nestProducers listDescendantFiles readFile
+
+hashFiles :: Monad m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
+hashFiles fs = hashFileHashes $ P.sequence <-< P.map hashFileChunks <-< P.map snd <-< fs
+
+hashFileChunks :: Monad m => Producer FileChunk m () -> m FileHash
+hashFileChunks = fmap FileHash . P.fold SHA256.update SHA256.init SHA256.finalize
+
+hashFileHashes :: Monad m => Producer FileHash m () -> m FileHash
+hashFileHashes = P.fold mappend mempty id
+
+type FileCount = Integer
+type FileChunk = ByteString
 
 data FileTreeHashProgress = FileTreeHashProgress
     { fthpBytesHashed :: ByteCount
     , fthpFilesHashed :: Integer
     , fthpFileCurrent :: Maybe FilePath }
 
-sha256 :: Monad m => Producer FileChunk m () -> m FileHash
-sha256 = fmap FileHash . fold SHA256.update SHA256.init SHA256.finalize
+updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
+updateFileTreeHashProgress p = \case
+    FileOpenEvent  path  -> p { fthpFileCurrent = Just path }
+    FileChunkEvent chunk -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length chunk) }
+    FileCloseEvent       -> p { fthpFilesHashed = fthpFilesHashed p + 1 }
 
