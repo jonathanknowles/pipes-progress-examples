@@ -5,6 +5,7 @@
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE TupleSections              #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
 
 module Pipes.Progress.Examples where
 
@@ -265,67 +266,64 @@ nestFlattenedStream
     -> Producer (a, Producer b m r) m r
 nestFlattenedStream xs = undefined
 
-nest :: Monad m => Pipe (NestedStreamEvent a b) (a, Producer b m r) m r
-nest = undefined
-
-
-
--- thoughts
---
--- Producer (a, Producer b m r) m r -> Producer (NestedStreamEvent a b) m r
---
--- Producer (NestedStreamEvent a b) m r -> Producer (a, Producer b m r) m r
-
-nestProducers :: Monad m
-              => (a -> Producer b m ())
-              -> (b -> Producer c m ())
-              -> a -> Producer (b, Producer c m ()) m ()
-nestProducers aToBs bToCs a =
-    P.map (A.second P.enumerate) <-< (P.enumerate . nestLists x y) a
+nest :: Monad m
+     => (a -> Producer b m ())
+     -> (b -> Producer c m ())
+     -> a -> Producer (b, Producer c m ()) m ()
+nest aToBs bToCs a = P.map (A.second P.enumerate) <-< (P.enumerate . nestLists x y) a
     where
         x = P.Select . aToBs
         y = P.Select . bToCs
 
 nestLists :: Monad m
-          => (a -> ListT m b)
-          -> (b -> ListT m c)
-          -> a -> ListT m (b, ListT m c)
+    => (a -> ListT m b)
+    -> (b -> ListT m c)
+    -> a -> ListT m (b, ListT m c)
 nestLists aToBs bToCs =
     aToBs >=> \b -> pure (b, bToCs b)
 
 nestedProducersToLists :: Monad m
-                       => Producer (a, Producer b m ()) m ()
-                       -> ListT m (a, ListT m b)
+    => Producer (a, Producer b m ()) m ()
+    -> ListT m (a, ListT m b)
 nestedProducersToLists s = P.Select $ s >-> P.map (A.second P.Select)
 
 nestedListsToProducers :: Monad m
-                       => ListT m (a, ListT m b)
-                       -> Producer (a, Producer b m ()) m ()
+    => ListT m (a, ListT m b)
+    -> Producer (a, Producer b m ()) m ()
 nestedListsToProducers s = P.enumerate s >-> P.map (A.second P.enumerate)
 
 data FileStreamEvent =
     FileOpenEvent FilePath | FileChunkEvent FileChunk | FileCloseEvent
 
 hashFileTree :: FilePath -> IO FileHash
-hashFileTree = PS.runSafeT . hashFiles . readFiles
+hashFileTree path = do
+    liftIO $ putStrLn "" >> putStrLn "Opening directory for reading" >> putStrLn ""
+    result <- PS.runSafeT $ hashFiles $ monitorStuff <-< nest descendantFiles readFile path
+    liftIO $ putStrLn "" >> putStrLn "Closing directory for reading" >> putStrLn ""
+    pure result
     where
         monitorStuff :: Monad m => Pipe x x m ()
         monitorStuff = P.cat
 
-listDescendantFiles :: PS.MonadSafe m => FilePath -> Producer FilePath m ()
-listDescendantFiles path = PF.onlyFiles <-< P.enumerate (PF.descendants PF.RootToLeaf path)
+descendantFiles :: PS.MonadSafe m => FilePath -> Producer FilePath m ()
+descendantFiles path = PF.onlyFiles <-< P.enumerate (PF.descendants PF.RootToLeaf path)
 
 readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
-readFile path = PS.withFile path S.ReadMode fromHandle
+readFile path = do
+    liftIO $ putStrLn "" >> putStrLn "Opening file for reading" >> putStrLn ""
+    PS.withFile path S.ReadMode fromHandle
+    liftIO $ putStrLn "" >> putStrLn "Closing file for reading" >> putStrLn ""
 
-readFiles :: PS.MonadSafe m => FilePath -> Producer (FilePath, Producer FileChunk m ()) m ()
-readFiles = nestProducers listDescendantFiles readFile
-
-hashFiles :: Monad m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
+hashFiles :: MonadIO m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
 hashFiles fs = hashFileHashes $ P.sequence <-< P.map hashFileChunks <-< P.map snd <-< fs
 
-hashFileChunks :: Monad m => Producer FileChunk m () -> m FileHash
-hashFileChunks = fmap FileHash . P.fold SHA256.update SHA256.init SHA256.finalize
+hashFileChunks :: MonadIO m => Producer FileChunk m () -> m FileHash
+hashFileChunks = fmap FileHash . P.foldM update (pure SHA256.init) finalize
+    where
+        finalize h = pure $ SHA256.finalize h
+        update h c = do
+            liftIO (putStr "c")
+            pure $ SHA256.update h c
 
 hashFileHashes :: Monad m => Producer FileHash m () -> m FileHash
 hashFileHashes = P.fold mappend mempty id
@@ -342,5 +340,6 @@ updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTre
 updateFileTreeHashProgress p = \case
     FileOpenEvent  path  -> p { fthpFileCurrent = Just path }
     FileChunkEvent chunk -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length chunk) }
-    FileCloseEvent       -> p { fthpFilesHashed = fthpFilesHashed p + 1 }
+    FileCloseEvent       -> p { fthpFileCurrent = Nothing
+                              , fthpFilesHashed = fthpFilesHashed p + 1 }
 
