@@ -296,34 +296,19 @@ data FileStreamEvent =
     FileOpenEvent FilePath | FileChunkEvent FileChunk | FileCloseEvent
 
 hashFileTree :: FilePath -> IO FileHash
-hashFileTree path = do
-    liftIO $ putStrLn "" >> putStrLn "Opening directory for reading" >> putStrLn ""
-    result <- PS.runSafeT $ hashFiles $ monitorStuff <-< nest descendantFiles readFile path
-    liftIO $ putStrLn "" >> putStrLn "Closing directory for reading" >> putStrLn ""
-    pure result
-    where
-        monitorStuff :: Monad m => Pipe x x m ()
-        monitorStuff = P.cat
+hashFileTree path = PS.runSafeT $ hashFiles $ nest descendantFiles readFile path
 
 descendantFiles :: PS.MonadSafe m => FilePath -> Producer FilePath m ()
 descendantFiles path = PF.onlyFiles <-< P.enumerate (PF.descendants PF.RootToLeaf path)
 
 readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
-readFile path = do
-    liftIO $ putStrLn "" >> putStrLn "Opening file for reading" >> putStrLn ""
-    PS.withFile path S.ReadMode fromHandle
-    liftIO $ putStrLn "" >> putStrLn "Closing file for reading" >> putStrLn ""
+readFile path = PS.withFile path S.ReadMode fromHandle
 
-hashFiles :: MonadIO m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
+hashFiles :: Monad m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
 hashFiles fs = hashFileHashes $ P.sequence <-< P.map hashFileChunks <-< P.map snd <-< fs
 
-hashFileChunks :: MonadIO m => Producer FileChunk m () -> m FileHash
-hashFileChunks = fmap FileHash . P.foldM update (pure SHA256.init) finalize
-    where
-        finalize h = pure $ SHA256.finalize h
-        update h c = do
-            liftIO (putStr "c")
-            pure $ SHA256.update h c
+hashFileChunks :: Monad m => Producer FileChunk m () -> m FileHash
+hashFileChunks = fmap FileHash . P.fold SHA256.update SHA256.init SHA256.finalize
 
 hashFileHashes :: Monad m => Producer FileHash m () -> m FileHash
 hashFileHashes = P.fold mappend mempty id
