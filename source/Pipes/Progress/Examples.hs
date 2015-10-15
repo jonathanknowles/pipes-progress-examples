@@ -25,6 +25,7 @@ import Text.Printf (printf)
 import Text.Pretty
 
 import qualified Control.Arrow      as A
+import qualified Control.Foldl      as F
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.Bits          as Bits
 import qualified Data.ByteString    as B
@@ -33,8 +34,10 @@ import qualified Data.Text          as T
 import qualified Data.Text.IO       as T
 import qualified Data.Time.Human    as H
 import qualified Data.Word          as W
+import qualified Lens.Family        as LF
 import qualified Pipes              as P
 import qualified Pipes.FileSystem   as PF
+import qualified Pipes.Group        as PG
 import qualified Pipes.Prelude      as P
 import qualified Pipes.Safe         as PS
 import qualified Pipes.Safe.Prelude as PS
@@ -235,7 +238,7 @@ hashFileOld m f =
     S.withFile f S.ReadMode $ \i ->
     getFileSize f >>= \b ->
     withMonitor (map (fmap $ fileHashProgress b) >-> m) byteCounter $ \p ->
-        hashFileChunks $ fromHandle i >-> p
+        hashFileChunksP $ fromHandle i >-> p
 
 data FileHashProgress = FileHashProgress
     { fhpBytesHashed    :: ByteCount
@@ -305,15 +308,38 @@ readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
 readFile path = PS.withFile path S.ReadMode fromHandle
 
 hashFiles :: Monad m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
-hashFiles fs = hashFileHashes $ P.sequence <-< P.map hashFileChunks <-< P.map snd <-< fs
+hashFiles fs = hashFileHashesP $ P.sequence <-< P.map hashFileChunksP <-< P.map snd <-< fs
 
-hashFileChunks :: Monad m => Producer FileChunk m () -> m FileHash
-hashFileChunks = fmap FileHash . P.fold SHA256.update SHA256.init SHA256.finalize
+hashFileChunksP :: Monad m => Producer FileChunk m () -> m FileHash
+hashFileChunksP = F.purely P.fold hashFileChunks
 
-hashFileHashes :: Monad m => Producer FileHash m () -> m FileHash
-hashFileHashes = P.fold mappend mempty id
+hashFileHashesP :: Monad m => Producer FileHash m () -> m FileHash
+hashFileHashesP = F.purely P.fold hashFileHashes
+
+hashFileChunks :: F.Fold FileChunk FileHash
+hashFileChunks = F.Fold SHA256.update SHA256.init (FileHash . SHA256.finalize)
+
+hashFileHashes :: F.Fold FileHash FileHash
+hashFileHashes = F.Fold mappend mempty id
+
+-- write a stack overflow question about how to use groups
+-- assume tuples (index, filepath, filechunk)
+-- assume an existing function that's capable of computing the hash of a producer of filechunks
+
+-- ideas
+-- Provide a simple interface for each part of the flow to write to.
+-- Write a mapping in the outer wrapper, so when the inner flow writes outwards, it is rewritten outward but with a different type.
+-- Perhaps each function could take a consumer of some kind.
+-- In the end, we want a single monitor thread.
+
+hashFiles' :: (PS.MonadSafe m, MonadIO m) => Pipe FilePath FileHash m ()
+hashFiles' = P.sequence <-< P.map (PS.runSafeT . hashFileChunksP . readFile)
+
+hashFileTree' :: FilePath -> IO FileHash
+hashFileTree' path = PS.runSafeT $ hashFileHashesP $ hashFiles' <-< descendantFiles path
 
 type FileCount = Integer
+type FileIndex = Integer
 type FileChunk = ByteString
 
 data FileTreeHashProgress = FileTreeHashProgress
@@ -321,10 +347,35 @@ data FileTreeHashProgress = FileTreeHashProgress
     , fthpFilesHashed :: Integer
     , fthpFileCurrent :: Maybe FilePath }
 
+instance Show FileTreeHashProgress where show = undefined
+
+-- progress: [  0 %] [   0/1024 files] [   0  B/50.0 GB] [waiting]
+-- progress: [ 10 %] [ 128/1024 files] [  50 MB/50.0 GB] [hashing "../some/very/big/file"]
+-- progress: [ 50 %] [ 256/1024 files] [25.0 GB/50.0 GB] [hashing "../another/very/big/file"]
+-- progress: [ 90 %] [ 512/1024 files] [45.0 GB/50.0 GB] [hashing "../a/tiny/file"]
+-- progress: [100 %] [1024/1024 files] [50.0 GB/50.0 GB] [hashing complete]
+
 updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
 updateFileTreeHashProgress p = \case
-    FileOpenEvent  path  -> p { fthpFileCurrent = Just path }
-    FileChunkEvent chunk -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length chunk) }
-    FileCloseEvent       -> p { fthpFileCurrent = Nothing
-                              , fthpFilesHashed = fthpFilesHashed p + 1 }
+    FileOpenEvent  f -> p { fthpFileCurrent = Just f }
+    FileChunkEvent c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
+    FileCloseEvent   -> p { fthpFileCurrent = Nothing
+                          , fthpFilesHashed = fthpFilesHashed p + 1 }
+
+t3t1 :: (a, b, c) -> a
+t3t2 :: (a, b, c) -> b
+t3t3 :: (a, b, c) -> c
+
+t3t1 (a, _, _) = a
+t3t2 (_, b, _) = b
+t3t3 (_, _, c) = c
+
+indicesEqual :: (FileIndex, FilePath, ByteString) -> (FileIndex, FilePath, ByteString) -> Bool
+indicesEqual (i, _, _) (j, _, _) = i == j
+
+hashFileStream :: Monad m => Producer (FileIndex, FilePath, ByteString) m () -> m FileHash
+hashFileStream stream = z
+    where
+        z = hashFileHashesP $ F.purely PG.folds hashFileChunks (PG.maps (\a -> a >-> P.map t3t3) x)
+        x = LF.view (PG.groupsBy indicesEqual) stream
 

@@ -22,6 +22,7 @@ library
         base >=4.8 && <4.9,
         bytestring,
         cryptohash,
+        foldl,
         lens-family-core,
         pipes,
         pipes-bytestring,
