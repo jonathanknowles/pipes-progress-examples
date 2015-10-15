@@ -114,9 +114,9 @@ instance Pretty FileHashProgress where
 
 instance Pretty FileTreeHashProgress where
     pretty FileTreeHashProgress {..} = T.concat
-        [      "[",    "files: ", pretty fthpFilesHashed, "]"
-        , " ", "[",    "bytes: ", pretty fthpBytesHashed, "]"
-        , " ", "[",  "current: ", T.pack (show fthpFileCurrent), "]" ]
+        [      "[", "files hashed: ", pretty fthpFilesHashed, "]"
+        , " ", "[", "bytes hashed: ", pretty fthpBytesHashed, "]"
+        , " ", "[",      "current: ", pretty fthpFileCurrent, "]" ]
 
 instance Pretty RichFileCopyProgress where
     pretty p = T.concat
@@ -133,8 +133,11 @@ instance Pretty RichFileCopyProgress where
             remaining   = pretty (TimeRemaining (rfcpTimeRemaining p))
 
 instance Pretty a => Pretty (Maybe a) where
-    pretty (Nothing) = "<nothing>"
+    pretty (Nothing) = T.pack "<nothing>"
     pretty (Just x) = pretty x
+
+instance Pretty String where
+    pretty = T.pack
 
 getFileSize :: String -> IO ByteCount
 getFileSize path = do
