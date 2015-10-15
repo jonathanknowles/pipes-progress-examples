@@ -13,6 +13,7 @@ import Control.Applicative
 import Control.Concurrent       hiding (yield)
 import Control.Exception               (evaluate, try, throwIO)
 import Control.Monad
+import Data.Function                   (on)
 import Data.Monoid
 import Data.Text                       (Text)
 import Pipes                    hiding (every)
@@ -111,6 +112,12 @@ instance Pretty FileHashProgress where
         [      "[",   "hashed: ", pretty fhpBytesHashed   , "]"
         , " ", "[","remaining: ", pretty fhpBytesRemaining, "]" ]
 
+instance Pretty FileTreeHashProgress where
+    pretty FileTreeHashProgress {..} = T.concat
+        [      "[",    "files: ", pretty fthpFilesHashed, "]"
+        , " ", "[",    "bytes: ", pretty fthpBytesHashed, "]"
+        , " ", "[",  "current: ", T.pack (show fthpFileCurrent), "]" ]
+
 instance Pretty RichFileCopyProgress where
     pretty p = T.concat
         [      "[",               percentage, "]"
@@ -124,6 +131,10 @@ instance Pretty RichFileCopyProgress where
             rate        = pretty (rfcpTransferRate  p)
             elapsed     = pretty (TimeElapsed   (rfcpTimeElapsed   p))
             remaining   = pretty (TimeRemaining (rfcpTimeRemaining p))
+
+instance Pretty a => Pretty (Maybe a) where
+    pretty (Nothing) = "<nothing>"
+    pretty (Just x) = pretty x
 
 getFileSize :: String -> IO ByteCount
 getFileSize path = do
@@ -161,6 +172,8 @@ main :: IO ()
 main = do
     putStrLn "starting"
     S.hSetBuffering S.stdout S.NoBuffering
+    hash <- hashFileTree''' (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test"
+    Prelude.print hash
     hash <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
     copyFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB" "/dev/null"
     hash <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB"
@@ -252,7 +265,7 @@ fileHashProgress limit p = FileHashProgress
 data NestedStreamEvent a b
     = NestedStreamStart a
     | NestedStreamChunk b
-    | NestedStreamEnd
+    | NestedStreamEnd   a
 
 flattenNestedStream
     :: Monad m
@@ -261,13 +274,7 @@ flattenNestedStream
 flattenNestedStream abs = for abs $ \(a, bs) -> do
     yield                $ NestedStreamStart a
     for bs $ \b -> yield $ NestedStreamChunk b
-    yield                  NestedStreamEnd
-
-nestFlattenedStream
-    :: Monad m
-    => Producer (NestedStreamEvent a b) m r
-    -> Producer (a, Producer b m r) m r
-nestFlattenedStream xs = undefined
+    yield                $ NestedStreamEnd   a
 
 nest :: Monad m
      => (a -> Producer b m ())
@@ -294,9 +301,6 @@ nestedListsToProducers :: Monad m
     => ListT m (a, ListT m b)
     -> Producer (a, Producer b m ()) m ()
 nestedListsToProducers s = P.enumerate s >-> P.map (A.second P.enumerate)
-
-data FileStreamEvent =
-    FileOpenEvent FilePath | FileChunkEvent FileChunk | FileCloseEvent
 
 hashFileTree :: FilePath -> IO FileHash
 hashFileTree path = PS.runSafeT $ hashFiles $ nest descendantFiles readFile path
@@ -345,9 +349,7 @@ type FileChunk = ByteString
 data FileTreeHashProgress = FileTreeHashProgress
     { fthpBytesHashed :: ByteCount
     , fthpFilesHashed :: Integer
-    , fthpFileCurrent :: Maybe FilePath }
-
-instance Show FileTreeHashProgress where show = undefined
+    , fthpFileCurrent :: Maybe FilePath } deriving Show
 
 -- progress: [  0 %] [   0/1024 files] [   0  B/50.0 GB] [waiting]
 -- progress: [ 10 %] [ 128/1024 files] [  50 MB/50.0 GB] [hashing "../some/very/big/file"]
@@ -357,10 +359,10 @@ instance Show FileTreeHashProgress where show = undefined
 
 updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
 updateFileTreeHashProgress p = \case
-    FileOpenEvent  f -> p { fthpFileCurrent = Just f }
-    FileChunkEvent c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
-    FileCloseEvent   -> p { fthpFileCurrent = Nothing
-                          , fthpFilesHashed = fthpFilesHashed p + 1 }
+    FileStreamStart f -> p { fthpFileCurrent = Just f }
+    FileStreamChunk c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
+    FileStreamEnd   f -> p { fthpFileCurrent = Nothing
+                           , fthpFilesHashed = fthpFilesHashed p + 1 }
 
 t3t1 :: (a, b, c) -> a
 t3t2 :: (a, b, c) -> b
@@ -370,12 +372,85 @@ t3t1 (a, _, _) = a
 t3t2 (_, b, _) = b
 t3t3 (_, _, c) = c
 
-indicesEqual :: (FileIndex, FilePath, ByteString) -> (FileIndex, FilePath, ByteString) -> Bool
+indicesEqual :: (FileIndex, FilePath, ByteString) -> (FileIndex, FilePath, FileChunk) -> Bool
 indicesEqual (i, _, _) (j, _, _) = i == j
 
-hashFileStream :: Monad m => Producer (FileIndex, FilePath, ByteString) m () -> m FileHash
-hashFileStream stream = z
+data IndexedFileChunk = IndexedFileChunk
+    { ifcIndex :: FileCount
+    , ifcPath  :: FilePath
+    , ifcChunk :: FileChunk
+    }
+
+data FileStreamEvent
+    = FileStreamStart FilePath
+    | FileStreamChunk FileChunk
+    | FileStreamEnd   FilePath
+
+data FileStreamEventType = FileStreamStartType | FileStreamChunkType | FileStreamEndType deriving Eq
+
+eventType (FileStreamStart _) = FileStreamStartType
+eventType (FileStreamChunk _) = FileStreamChunkType
+eventType (FileStreamEnd   _) = FileStreamEndType
+
+isFileStreamChunk (FileStreamChunk _) = True
+isFileStreamChunk _ = False
+
+fileChunk :: FileStreamEvent -> Maybe FileChunk
+fileChunk (FileStreamChunk c) = Just c
+fileChunk _ = Nothing
+
+hashFileStream :: Monad m => Producer IndexedFileChunk m () -> m FileHash
+hashFileStream = hashFileHashesP
+    . F.purely PG.folds hashFileChunks
+    . PG.maps (>-> P.map ifcChunk)
+    . LF.view (PG.groupsBy (on (==) ifcIndex))
+
+hashFileStream' :: Monad m => Producer FileStreamEvent m () -> m FileHash
+hashFileStream' = hashFileHashesP
+    . F.purely PG.folds hashFileChunks
+    . PG.maps (>-> filterMap fileChunk)
+    . LF.view (PG.groupsBy (on (==) eventType))
+
+filterMap :: Monad m => (a -> Maybe b) -> Pipe a b m r
+filterMap f = forever $
+    f <$> await >>= \case
+        Nothing -> pure ()
+        Just b  -> yield b
+
+streamFileTree :: PS.MonadSafe m => FilePath -> Producer FileStreamEvent m ()
+streamFileTree = convert . flattenNestedStream . nest descendantFiles readFile
+    where convert = (<-<) $ P.map $ \case
+            NestedStreamStart x -> FileStreamStart x
+            NestedStreamChunk x -> FileStreamChunk x
+            NestedStreamEnd   x -> FileStreamEnd   x
+
+hashFileTree'' :: FilePath -> IO FileHash
+hashFileTree'' = PS.runSafeT . hashFileStream' . streamFileTree
+
+hashFileTree'''
+    :: Monitor FileTreeHashProgress
+    -> FilePath
+    -> IO FileHash
+hashFileTree''' m f = PS.runSafeT $ withMonitor m counter $ \p ->
+    hashFileStream' (streamFileTree f >-> p)
     where
-        z = hashFileHashesP $ F.purely PG.folds hashFileChunks (PG.maps (\a -> a >-> P.map t3t3) x)
-        x = LF.view (PG.groupsBy indicesEqual) stream
+        start = FileTreeHashProgress { fthpFilesHashed = 0, fthpBytesHashed = 0, fthpFileCurrent = Nothing}
+        counter = Counter start (acc start)
+        acc :: Monad m => FileTreeHashProgress -> Pipe FileStreamEvent FileTreeHashProgress m ()
+        acc old = do
+            v <- await
+            let new = updateFileTreeHashProgress old v
+            yield new
+            acc new
+
+hashFileWibble
+    :: Monitor FileHashProgress
+    -> FilePath
+    -> IO FileHash
+hashFileWibble m f =
+    S.withFile f S.ReadMode $ \i ->
+    getFileSize f >>= \b ->
+    withMonitor (map (fmap $ fileHashProgress b) >-> m) byteCounter $ \p ->
+        hashFileChunksP $ fromHandle i >-> p
+
 
