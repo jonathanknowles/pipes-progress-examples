@@ -436,26 +436,9 @@ hashFileTree'''
     :: Monitor FileTreeHashProgress
     -> FilePath
     -> IO FileHash
-hashFileTree''' m f = PS.runSafeT $ withMonitor m counter $ \p ->
-    hashFileStream' (streamFileTree f >-> p)
-    where
-        start = FileTreeHashProgress { fthpFilesHashed = 0, fthpBytesHashed = 0, fthpFileCurrent = Nothing}
-        counter = Counter start (acc start)
-        acc :: Monad m => FileTreeHashProgress -> Pipe FileStreamEvent FileTreeHashProgress m ()
-        acc old = do
-            v <- await
-            let new = updateFileTreeHashProgress old v
-            yield new
-            acc new
-
-hashFileWibble
-    :: Monitor FileHashProgress
-    -> FilePath
-    -> IO FileHash
-hashFileWibble m f =
-    S.withFile f S.ReadMode $ \i ->
-    getFileSize f >>= \b ->
-    withMonitor (map (fmap $ fileHashProgress b) >-> m) byteCounter $ \p ->
-        hashFileChunksP $ fromHandle i >-> p
-
+hashFileTree''' m f =
+    PS.runSafeT $ withMonitor m counter $ \p ->
+        hashFileStream' (streamFileTree f >-> p) where
+            counter = Counter initialFileTreeHashProgress
+                (F.purely P.scan foldFileTreeHashProgress)
 
