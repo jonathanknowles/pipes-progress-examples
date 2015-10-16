@@ -391,15 +391,6 @@ data FileStreamEvent
     | FileStreamChunk FileChunk
     | FileStreamEnd   FilePath
 
-data FileStreamEventType = FileStreamStartType | FileStreamChunkType | FileStreamEndType deriving Eq
-
-eventType (FileStreamStart _) = FileStreamStartType
-eventType (FileStreamChunk _) = FileStreamChunkType
-eventType (FileStreamEnd   _) = FileStreamEndType
-
-isFileStreamChunk (FileStreamChunk _) = True
-isFileStreamChunk _ = False
-
 fileChunk :: FileStreamEvent -> Maybe FileChunk
 fileChunk (FileStreamChunk c) = Just c
 fileChunk _ = Nothing
