@@ -116,7 +116,7 @@ instance Pretty FileTreeHashProgress where
     pretty FileTreeHashProgress {..} = T.concat
         [      "[", "files hashed: ", pretty fthpFilesHashed, "]"
         , " ", "[", "bytes hashed: ", pretty fthpBytesHashed, "]"
-        , " ", "[",      "current: ", pretty fthpFileCurrent, "]" ]
+        , " ", "[",      "current: ", T.takeEnd 20 $ pretty fthpFileCurrent, "]" ]
 
 instance Pretty RichFileCopyProgress where
     pretty p = T.concat
@@ -175,7 +175,7 @@ main :: IO ()
 main = do
     putStrLn "starting"
     S.hSetBuffering S.stdout S.NoBuffering
-    hash <- hashFileTree''' (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test"
+    hash <- hashFileTree''' (every 0.5 >-> terminalMonitor) "/home/jsk/scratch"
     Prelude.print hash
     hash <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
     copyFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB" "/dev/null"
@@ -329,6 +329,8 @@ hashFileChunks = F.Fold SHA256.update SHA256.init (FileHash . SHA256.finalize)
 hashFileHashes :: F.Fold FileHash FileHash
 hashFileHashes = F.Fold mappend mempty id
 
+-- it should be a fold that gets passed as the "counting function". That could be passed to SCAN:
+
 -- write a stack overflow question about how to use groups
 -- assume tuples (index, filepath, filechunk)
 -- assume an existing function that's capable of computing the hash of a producer of filechunks
@@ -408,11 +410,15 @@ hashFileStream = hashFileHashesP
     . PG.maps (>-> P.map ifcChunk)
     . LF.view (PG.groupsBy (on (==) ifcIndex))
 
+sameFile :: FileStreamEvent -> FileStreamEvent -> Bool
+sameFile (FileStreamEnd _) (FileStreamStart _) = False
+sameFile _ _ = True
+
 hashFileStream' :: Monad m => Producer FileStreamEvent m () -> m FileHash
 hashFileStream' = hashFileHashesP
     . F.purely PG.folds hashFileChunks
     . PG.maps (>-> filterMap fileChunk)
-    . LF.view (PG.groupsBy (on (==) eventType))
+    . LF.view (PG.groupsBy sameFile)
 
 filterMap :: Monad m => (a -> Maybe b) -> Pipe a b m r
 filterMap f = forever $
