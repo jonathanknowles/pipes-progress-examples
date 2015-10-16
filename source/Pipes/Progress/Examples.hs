@@ -43,6 +43,7 @@ import qualified Pipes.Prelude      as P
 import qualified Pipes.Safe         as PS
 import qualified Pipes.Safe.Prelude as PS
 import qualified System.IO          as S
+import qualified System.Posix.Files as S
 import qualified GHC.IO.Exception   as G
 
 newtype ByteCount = ByteCount Integer deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
@@ -109,14 +110,21 @@ instance Pretty FileCopyProgress where
 
 instance Pretty FileHashProgress where
     pretty FileHashProgress {..} = T.concat
-        [      "[",   "hashed: ", pretty fhpBytesHashed   , "]"
-        , " ", "[","remaining: ", pretty fhpBytesRemaining, "]" ]
+        [      "[",    "hashed: ", pretty fhpBytesHashed   , "]"
+        , " ", "[", "remaining: ", pretty fhpBytesRemaining, "]" ]
 
 instance Pretty FileTreeHashProgress where
     pretty FileTreeHashProgress {..} = T.concat
         [      "[", "files hashed: ", pretty fthpFilesHashed, "]"
         , " ", "[", "bytes hashed: ", pretty fthpBytesHashed, "]"
-        , " ", "[",      "current: ", T.takeEnd 20 $ pretty fthpFileCurrent, "]" ]
+        , case fthpFileCurrent of
+            Nothing -> ""
+            Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
+
+instance Pretty FileTreeCountProgress where
+    pretty FileTreeCountProgress {..} = T.concat
+        [      "[", "bytes: ", pretty ftcpBytesCounted, "]"
+        , " ", "[", "files: ", pretty ftcpFilesCounted, "]" ]
 
 instance Pretty RichFileCopyProgress where
     pretty p = T.concat
@@ -170,25 +178,6 @@ updateProgress p t b = p
         nTimeRemaining = realToFrac $ fromIntegral (rfcpBytesTarget p - b) / nTransferRate
         nTransferRate  = 0.9 * rfcpTransferRate p
                        + 0.1 * transferRate (b - rfcpBytesCopied p) t
-
-main :: IO ()
-main = do
-    putStrLn "starting"
-    S.hSetBuffering S.stdout S.NoBuffering
-    let testDirectory = "/home/jsk/scratch/test"
-    hash <- hashFileTree' (every 0.5 >-> terminalMonitor) testDirectory
-    Prelude.print hash
-    hash <- hashFileTree testDirectory
-    Prelude.print hash
-    hash <- hashFileTreeSimple testDirectory
-    Prelude.print hash
-    hasha <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
-    hashb <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/512MiB"
-    hashc <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB"
-    Prelude.print hasha
-    Prelude.print hashb
-    Prelude.print hashc
-    Prelude.print (mconcat [hasha, hashb, hashc])
 
 terminalMonitor :: Pretty a => Monitor a
 terminalMonitor = forever $ do
@@ -393,9 +382,6 @@ foldFileTreeHashProgress = F.Fold
 
 type FileStreamEvent = StreamEvent FilePath FileChunk
 
-hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
-hashFileStream = hashFileHashesP . foldStreams hashFileChunks
-
 foldStreams :: (Eq o, Monad m)
     => F.Fold i j
     -> Producer (StreamEvent o i) m r
@@ -423,4 +409,38 @@ hashFileTree'
 hashFileTree' m f = PS.runSafeT $
     withMonitor m foldFileTreeHashProgress $ \p ->
         hashFileStream (streamFileTree f >-> p)
+
+hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
+hashFileStream = hashFileHashesP . foldStreams hashFileChunks
+
+countFileTree'
+    :: Monitor FileTreeCountProgress
+    -> FilePath
+    -> IO FileTreeCountProgress
+countFileTree' m f = PS.runSafeT $
+    withMonitor m foldFileTreeCountProgress $ \p ->
+        F.purely P.fold foldFileTreeCountProgress
+            (x p)
+    where
+        x :: Pipe ByteCount ByteCount (PS.SafeT IO) () -> Producer ByteCount (PS.SafeT IO) ()
+        x p = descendantFiles f >-> P.mapM (\x -> liftIO (fromIntegral . S.fileSize <$> S.getFileStatus x)) >-> p
+
+data FileTreeCountProgress = FileTreeCountProgress
+    { ftcpFilesCounted :: FileCount
+    , ftcpBytesCounted :: ByteCount }
+
+foldFileTreeCountProgress :: F.Fold ByteCount FileTreeCountProgress
+foldFileTreeCountProgress = F.Fold
+        updateFileTreeCountProgress
+        initialFileTreeCountProgress id
+
+updateFileTreeCountProgress :: FileTreeCountProgress -> ByteCount -> FileTreeCountProgress
+updateFileTreeCountProgress p c = p
+    { ftcpFilesCounted = ftcpFilesCounted p + 1
+    , ftcpBytesCounted = ftcpBytesCounted p + c }
+
+initialFileTreeCountProgress :: FileTreeCountProgress
+initialFileTreeCountProgress = FileTreeCountProgress
+    { ftcpFilesCounted = 0
+    , ftcpBytesCounted = 0 }
 
