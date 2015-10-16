@@ -175,12 +175,22 @@ main :: IO ()
 main = do
     putStrLn "starting"
     S.hSetBuffering S.stdout S.NoBuffering
-    hash <- hashFileTree' (every 0.5 >-> terminalMonitor) "/home/jsk/scratch"
+    let testDirectory = "/home/jsk/scratch/test"
+    hash <- hashFileTree' (every 0.5 >-> terminalMonitor) testDirectory
     Prelude.print hash
-    hash <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
-    copyFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB" "/dev/null"
-    hash <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB"
+    hash <- hashFileTree testDirectory
     Prelude.print hash
+    hash <- hashFileTreeSimple testDirectory
+    Prelude.print hash
+    hasha <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
+    hashb <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/512MiB"
+    hashc <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB"
+    Prelude.print hasha
+    Prelude.print hashb
+    Prelude.print hashc
+    Prelude.print (mconcat [hasha, hashb, hashc])
+
+
     --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/mnt/testdisk/target"
     --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/dev/null"
     --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/1GiB" "/dev/null"
@@ -192,8 +202,8 @@ terminalMonitor = forever $ do
         (if isFinal update then T.putStrLn else T.putStr)
         (returnToStart <> pretty (value update))
 
-byteCounter :: Monad m => Counter ByteString ByteCount m
-byteCounter = Counter 0 $ map chunkLength >-> accumulate 0
+byteCounter :: F.Fold ByteString ByteCount
+byteCounter = F.Fold step 0 id where step i j = i + chunkLength j
 
 transferData
     :: Monitor DataTransferProgress
@@ -411,8 +421,5 @@ hashFileTree'
     -> FilePath
     -> IO FileHash
 hashFileTree' m f =
-    PS.runSafeT $ withMonitor m counter $ \p ->
-        hashFileStream (streamFileTree f >-> p) where
-            counter = Counter initialFileTreeHashProgress
-                (F.purely P.scan foldFileTreeHashProgress)
-
+    PS.runSafeT $ withMonitor m foldFileTreeHashProgress $ \p ->
+        hashFileStream (streamFileTree f >-> p)
