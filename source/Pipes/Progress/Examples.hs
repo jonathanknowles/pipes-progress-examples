@@ -351,16 +351,16 @@ type FileCount = Integer
 type FileIndex = Integer
 type FileChunk = ByteString
 
-data FileTreeHashProgress = FileTreeHashProgress
-    { fthpBytesHashed :: ByteCount
-    , fthpFilesHashed :: Integer
-    , fthpFileCurrent :: Maybe FilePath } deriving Show
-
 -- progress: [  0 %] [   0/1024 files] [   0  B/50.0 GB] [waiting]
 -- progress: [ 10 %] [ 128/1024 files] [  50 MB/50.0 GB] [hashing "../some/very/big/file"]
 -- progress: [ 50 %] [ 256/1024 files] [25.0 GB/50.0 GB] [hashing "../another/very/big/file"]
 -- progress: [ 90 %] [ 512/1024 files] [45.0 GB/50.0 GB] [hashing "../a/tiny/file"]
 -- progress: [100 %] [1024/1024 files] [50.0 GB/50.0 GB] [hashing complete]
+
+data FileTreeHashProgress = FileTreeHashProgress
+    { fthpBytesHashed :: ByteCount
+    , fthpFilesHashed :: Integer
+    , fthpFileCurrent :: Maybe FilePath }
 
 updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
 updateFileTreeHashProgress p = \case
@@ -368,6 +368,16 @@ updateFileTreeHashProgress p = \case
     StreamChunk c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
     StreamEnd   f -> p { fthpFileCurrent = Nothing
                        , fthpFilesHashed = fthpFilesHashed p + 1 }
+
+initialFileTreeHashProgress :: FileTreeHashProgress
+initialFileTreeHashProgress = FileTreeHashProgress
+    { fthpFileCurrent = Nothing
+    , fthpFilesHashed = 0
+    , fthpBytesHashed = 0 }
+
+foldFileTreeHashProgress :: F.Fold FileStreamEvent FileTreeHashProgress
+foldFileTreeHashProgress = F.Fold
+    updateFileTreeHashProgress initialFileTreeHashProgress id
 
 t3t1 :: (a, b, c) -> a
 t3t2 :: (a, b, c) -> b
