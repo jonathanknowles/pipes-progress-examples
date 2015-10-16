@@ -190,11 +190,6 @@ main = do
     Prelude.print hashc
     Prelude.print (mconcat [hasha, hashb, hashc])
 
-
-    --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/mnt/testdisk/target"
-    --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/4GiB" "/dev/null"
-    --copyFile (every 0.1 >-> terminalMonitor) "/mnt/testdisk/1GiB" "/dev/null"
-
 terminalMonitor :: Pretty a => Monitor a
 terminalMonitor = forever $ do
     update <- await
@@ -280,6 +275,15 @@ data StreamEvent a b
     | StreamChunk a b
     | StreamEnd   a
 
+streamId :: StreamEvent a b -> a
+streamId (StreamStart a  ) = a
+streamId (StreamChunk a _) = a
+streamId (StreamEnd   a  ) = a
+
+streamChunk :: StreamEvent a b -> Maybe b
+streamChunk (StreamChunk _ b) = Just b
+streamChunk _ = Nothing
+
 flatten
     :: Monad m
     => Producer (a, Producer b m r) m r
@@ -293,7 +297,8 @@ nest :: Monad m
      => (a -> Producer b m ())
      -> (b -> Producer c m ())
      -> a -> Producer (b, Producer c m ()) m ()
-nest aToBs bToCs a = P.map (A.second P.enumerate) <-< (P.enumerate . nestLists x y) a
+nest aToBs bToCs a = P.map (A.second P.enumerate)
+        <-< (P.enumerate . nestLists x y) a
     where
         x = P.Select . aToBs
         y = P.Select . bToCs
@@ -388,15 +393,6 @@ foldFileTreeHashProgress = F.Fold
 
 type FileStreamEvent = StreamEvent FilePath FileChunk
 
-streamId :: StreamEvent a b -> a
-streamId (StreamStart a  ) = a
-streamId (StreamChunk a _) = a
-streamId (StreamEnd   a  ) = a
-
-streamChunk :: StreamEvent a b -> Maybe b
-streamChunk (StreamChunk _ b) = Just b
-streamChunk _ = Nothing
-
 hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
 hashFileStream = hashFileHashesP . foldStreams hashFileChunks
 
@@ -424,7 +420,7 @@ hashFileTree'
     :: Monitor FileTreeHashProgress
     -> FilePath
     -> IO FileHash
-hashFileTree' m f =
-    PS.runSafeT $ withMonitor m foldFileTreeHashProgress $ \p ->
+hashFileTree' m f = PS.runSafeT $
+    withMonitor m foldFileTreeHashProgress $ \p ->
         hashFileStream (streamFileTree f >-> p)
 
