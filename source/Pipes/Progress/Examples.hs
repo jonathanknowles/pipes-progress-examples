@@ -175,7 +175,7 @@ main :: IO ()
 main = do
     putStrLn "starting"
     S.hSetBuffering S.stdout S.NoBuffering
-    hash <- hashFileTree''' (every 0.5 >-> terminalMonitor) "/home/jsk/scratch"
+    hash <- hashFileTree' (every 0.5 >-> terminalMonitor) "/home/jsk/scratch"
     Prelude.print hash
     hash <- hashFileOld (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/256MiB"
     copyFile (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/test/1GiB" "/dev/null"
@@ -305,9 +305,6 @@ nestedListsToProducers :: Monad m
     -> Producer (a, Producer b m ()) m ()
 nestedListsToProducers s = P.enumerate s >-> P.map (A.second P.enumerate)
 
-hashFileTree :: FilePath -> IO FileHash
-hashFileTree path = PS.runSafeT $ hashFiles $ nest descendantFiles readFile path
-
 descendantFiles :: PS.MonadSafe m => FilePath -> Producer FilePath m ()
 descendantFiles path = PF.onlyFiles <-< P.enumerate (PF.descendants PF.RootToLeaf path)
 
@@ -341,11 +338,11 @@ hashFileHashes = F.Fold mappend mempty id
 -- Perhaps each function could take a consumer of some kind.
 -- In the end, we want a single monitor thread.
 
-hashFiles' :: (PS.MonadSafe m, MonadIO m) => Pipe FilePath FileHash m ()
-hashFiles' = P.sequence <-< P.map (PS.runSafeT . hashFileChunksP . readFile)
+hashFilesSimple :: (PS.MonadSafe m, MonadIO m) => Pipe FilePath FileHash m ()
+hashFilesSimple = P.sequence <-< P.map (PS.runSafeT . hashFileChunksP . readFile)
 
-hashFileTree' :: FilePath -> IO FileHash
-hashFileTree' path = PS.runSafeT $ hashFileHashesP $ hashFiles' <-< descendantFiles path
+hashFileTreeSimple :: FilePath -> IO FileHash
+hashFileTreeSimple path = PS.runSafeT $ hashFileHashesP $ hashFilesSimple <-< descendantFiles path
 
 type FileCount = Integer
 type FileIndex = Integer
@@ -359,7 +356,7 @@ type FileChunk = ByteString
 
 data FileTreeHashProgress = FileTreeHashProgress
     { fthpBytesHashed :: ByteCount
-    , fthpFilesHashed :: Integer
+    , fthpFilesHashed :: FileCount
     , fthpFileCurrent :: Maybe FilePath }
 
 updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
@@ -389,8 +386,8 @@ sameStream :: NestedStreamEvent o i -> NestedStreamEvent o i -> Bool
 sameStream (StreamEnd _) (StreamStart _) = False
 sameStream _ _ = True
 
-hashFileStream' :: Monad m => Producer FileStreamEvent m () -> m FileHash
-hashFileStream' = hashFileHashesP . foldNestedStreams hashFileChunks
+hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
+hashFileStream = hashFileHashesP . foldNestedStreams hashFileChunks
 
 foldNestedStreams :: Monad m => F.Fold i j -> Producer (NestedStreamEvent o i) m r -> Producer j m r
 foldNestedStreams f = F.purely PG.folds f
@@ -406,16 +403,16 @@ filterMap f = forever $
 streamFileTree :: PS.MonadSafe m => FilePath -> Producer FileStreamEvent m ()
 streamFileTree = flattenNestedStream . nest descendantFiles readFile
 
-hashFileTree'' :: FilePath -> IO FileHash
-hashFileTree'' = PS.runSafeT . hashFileStream' . streamFileTree
+hashFileTree :: FilePath -> IO FileHash
+hashFileTree = PS.runSafeT . hashFileStream . streamFileTree
 
-hashFileTree'''
+hashFileTree'
     :: Monitor FileTreeHashProgress
     -> FilePath
     -> IO FileHash
-hashFileTree''' m f =
+hashFileTree' m f =
     PS.runSafeT $ withMonitor m counter $ \p ->
-        hashFileStream' (streamFileTree f >-> p) where
+        hashFileStream (streamFileTree f >-> p) where
             counter = Counter initialFileTreeHashProgress
                 (F.purely P.scan foldFileTreeHashProgress)
 
