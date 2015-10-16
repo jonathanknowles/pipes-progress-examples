@@ -379,34 +379,11 @@ foldFileTreeHashProgress :: F.Fold FileStreamEvent FileTreeHashProgress
 foldFileTreeHashProgress = F.Fold
     updateFileTreeHashProgress initialFileTreeHashProgress id
 
-t3t1 :: (a, b, c) -> a
-t3t2 :: (a, b, c) -> b
-t3t3 :: (a, b, c) -> c
-
-t3t1 (a, _, _) = a
-t3t2 (_, b, _) = b
-t3t3 (_, _, c) = c
-
-indicesEqual :: (FileIndex, FilePath, ByteString) -> (FileIndex, FilePath, FileChunk) -> Bool
-indicesEqual (i, _, _) (j, _, _) = i == j
-
-data IndexedFileChunk = IndexedFileChunk
-    { ifcIndex :: FileCount
-    , ifcPath  :: FilePath
-    , ifcChunk :: FileChunk
-    }
-
 type FileStreamEvent = NestedStreamEvent FilePath FileChunk
 
 nestedChunk :: NestedStreamEvent o i -> Maybe i
 nestedChunk (StreamChunk i) = Just i
 nestedChunk _ = Nothing
-
-hashFileStream :: Monad m => Producer IndexedFileChunk m () -> m FileHash
-hashFileStream = hashFileHashesP
-    . F.purely PG.folds hashFileChunks
-    . PG.maps (>-> P.map ifcChunk)
-    . LF.view (PG.groupsBy (on (==) ifcIndex))
 
 sameStream :: NestedStreamEvent o i -> NestedStreamEvent o i -> Bool
 sameStream (StreamEnd _) (StreamStart _) = False
