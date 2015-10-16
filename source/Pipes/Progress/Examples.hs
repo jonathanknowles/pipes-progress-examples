@@ -147,10 +147,8 @@ instance Pretty a => Pretty (Maybe a) where
 instance Pretty String where
     pretty = T.pack
 
-getFileSize :: String -> IO ByteCount
-getFileSize path = do
-    stat <- getFileStatus path
-    return (ByteCount $ fromIntegral $ fileSize stat)
+getFileSize :: FilePath -> IO ByteCount
+getFileSize = fmap (fromIntegral . S.fileSize) . S.getFileStatus
 
 progressComplete :: RichFileCopyProgress -> Bool
 progressComplete p = rfcpBytesCopied p == rfcpBytesTarget p
@@ -419,8 +417,8 @@ countFileTree'
     -> IO FileTreeCountProgress
 countFileTree' m f = PS.runSafeT $
     withMonitor m foldFileTreeCountProgress $ \p ->
-        F.purely P.fold foldFileTreeCountProgress
-            (descendantFiles f >-> P.mapM (\x -> liftIO (fromIntegral . S.fileSize <$> S.getFileStatus x)) >-> p)
+        F.purely P.fold foldFileTreeCountProgress $
+            descendantFiles f >-> P.mapM (liftIO . getFileSize) >-> p
 
 data FileTreeCountProgress = FileTreeCountProgress
     { ftcpFilesCounted :: FileCount

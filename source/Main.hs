@@ -11,11 +11,13 @@ main :: IO ()
 main = do
     putStrLn "starting"
     S.hSetBuffering S.stdout S.NoBuffering
+    answer <- countFileTree' (every 0.2 >-> terminalMonitor) "/public/jsk"
+    answer <- countFileTree' (every 0.2 >-> terminalMonitor) "/public/jsk"
+    putStrLn "finished"
+    {--
     let testDirectory = "/home/jsk/scratch/test"
     hash <- hashFileTree' (every 0.5 >-> terminalMonitor) testDirectory
     Prelude.print hash
-    answer <- countFileTree' (every 0.5 >-> terminalMonitor) "/home/jsk/scratch/"
-    answer <- countFileTree' (every 0.5 >-> terminalMonitor) "/home/jsk/"
     hash <- hashFileTree testDirectory
     Prelude.print hash
     hash <- hashFileTreeSimple testDirectory
@@ -27,3 +29,4 @@ main = do
     Prelude.print hashb
     Prelude.print hashc
     Prelude.print (mconcat [hasha, hashb, hashc])
+    --}
