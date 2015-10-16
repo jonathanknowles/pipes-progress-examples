@@ -420,10 +420,7 @@ countFileTree'
 countFileTree' m f = PS.runSafeT $
     withMonitor m foldFileTreeCountProgress $ \p ->
         F.purely P.fold foldFileTreeCountProgress
-            (x p)
-    where
-        x :: Pipe ByteCount ByteCount (PS.SafeT IO) () -> Producer ByteCount (PS.SafeT IO) ()
-        x p = descendantFiles f >-> P.mapM (\x -> liftIO (fromIntegral . S.fileSize <$> S.getFileStatus x)) >-> p
+            (descendantFiles f >-> P.mapM (\x -> liftIO (fromIntegral . S.fileSize <$> S.getFileStatus x)) >-> p)
 
 data FileTreeCountProgress = FileTreeCountProgress
     { ftcpFilesCounted :: FileCount
