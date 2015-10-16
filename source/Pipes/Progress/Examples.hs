@@ -266,18 +266,18 @@ fileHashProgress limit p = FileHashProgress
     , fhpBytesRemaining = limit - p }
 
 data NestedStreamEvent a b
-    = NestedStreamStart a
-    | NestedStreamChunk b
-    | NestedStreamEnd   a
+    = StreamStart a
+    | StreamChunk b
+    | StreamEnd   a
 
 flattenNestedStream
     :: Monad m
     => Producer (a, Producer b m r) m r
     -> Producer (NestedStreamEvent a b) m r
 flattenNestedStream abs = for abs $ \(a, bs) -> do
-    yield                $ NestedStreamStart a
-    for bs $ \b -> yield $ NestedStreamChunk b
-    yield                $ NestedStreamEnd   a
+    yield                $ StreamStart a
+    for bs $ \b -> yield $ StreamChunk b
+    yield                $ StreamEnd   a
 
 nest :: Monad m
      => (a -> Producer b m ())
@@ -364,10 +364,10 @@ data FileTreeHashProgress = FileTreeHashProgress
 
 updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
 updateFileTreeHashProgress p = \case
-    FileStreamStart f -> p { fthpFileCurrent = Just f }
-    FileStreamChunk c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
-    FileStreamEnd   f -> p { fthpFileCurrent = Nothing
-                           , fthpFilesHashed = fthpFilesHashed p + 1 }
+    StreamStart f -> p { fthpFileCurrent = Just f }
+    StreamChunk c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
+    StreamEnd   f -> p { fthpFileCurrent = Nothing
+                       , fthpFilesHashed = fthpFilesHashed p + 1 }
 
 t3t1 :: (a, b, c) -> a
 t3t2 :: (a, b, c) -> b
@@ -386,14 +386,11 @@ data IndexedFileChunk = IndexedFileChunk
     , ifcChunk :: FileChunk
     }
 
-data FileStreamEvent
-    = FileStreamStart FilePath
-    | FileStreamChunk FileChunk
-    | FileStreamEnd   FilePath
+type FileStreamEvent = NestedStreamEvent FilePath FileChunk
 
-fileChunk :: FileStreamEvent -> Maybe FileChunk
-fileChunk (FileStreamChunk c) = Just c
-fileChunk _ = Nothing
+nestedChunk :: NestedStreamEvent o i -> Maybe i
+nestedChunk (StreamChunk i) = Just i
+nestedChunk _ = Nothing
 
 hashFileStream :: Monad m => Producer IndexedFileChunk m () -> m FileHash
 hashFileStream = hashFileHashesP
@@ -401,15 +398,17 @@ hashFileStream = hashFileHashesP
     . PG.maps (>-> P.map ifcChunk)
     . LF.view (PG.groupsBy (on (==) ifcIndex))
 
-sameFile :: FileStreamEvent -> FileStreamEvent -> Bool
-sameFile (FileStreamEnd _) (FileStreamStart _) = False
-sameFile _ _ = True
+sameStream :: NestedStreamEvent o i -> NestedStreamEvent o i -> Bool
+sameStream (StreamEnd _) (StreamStart _) = False
+sameStream _ _ = True
 
 hashFileStream' :: Monad m => Producer FileStreamEvent m () -> m FileHash
-hashFileStream' = hashFileHashesP
-    . F.purely PG.folds hashFileChunks
-    . PG.maps (>-> filterMap fileChunk)
-    . LF.view (PG.groupsBy sameFile)
+hashFileStream' = hashFileHashesP . foldNestedStreams hashFileChunks
+
+foldNestedStreams :: Monad m => F.Fold i j -> Producer (NestedStreamEvent o i) m r -> Producer j m r
+foldNestedStreams f = F.purely PG.folds f
+    . PG.maps (>-> filterMap nestedChunk)
+    . LF.view (PG.groupsBy sameStream)
 
 filterMap :: Monad m => (a -> Maybe b) -> Pipe a b m r
 filterMap f = forever $
@@ -418,11 +417,7 @@ filterMap f = forever $
         Just b  -> yield b
 
 streamFileTree :: PS.MonadSafe m => FilePath -> Producer FileStreamEvent m ()
-streamFileTree = convert . flattenNestedStream . nest descendantFiles readFile
-    where convert = (<-<) $ P.map $ \case
-            NestedStreamStart x -> FileStreamStart x
-            NestedStreamChunk x -> FileStreamChunk x
-            NestedStreamEnd   x -> FileStreamEnd   x
+streamFileTree = flattenNestedStream . nest descendantFiles readFile
 
 hashFileTree'' :: FilePath -> IO FileHash
 hashFileTree'' = PS.runSafeT . hashFileStream' . streamFileTree
