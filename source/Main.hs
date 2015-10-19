@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
 import Pipes ((>->))
@@ -11,7 +13,6 @@ main :: IO ()
 main = do
     putStrLn "starting"
     S.hSetBuffering S.stdout S.NoBuffering
-    answer <- countFileTree' (every 0.2 >-> terminalMonitor) "/public/jsk"
     answer <- countFileTree' (every 0.2 >-> terminalMonitor) "/public/jsk"
     putStrLn "finished"
     {--

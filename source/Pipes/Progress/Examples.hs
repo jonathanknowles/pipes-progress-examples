@@ -20,33 +20,37 @@ import Pipes                    hiding (every)
 import Pipes.ByteString         hiding (count, find, take, takeWhile, map)
 import Pipes.Prelude            hiding (findi, fromHandle, toHandle, mapM_, show)
 import Pipes.Progress
-import Prelude                  hiding (map, readFile, take, takeWhile)
+import Prelude                  hiding (map, readFile, take, takeWhile, FilePath)
 import System.Posix             hiding (ByteCount)
+import System.Posix.ByteString         (RawFilePath)
 import Text.Printf (printf)
 import Text.Pretty
 
-import qualified Control.Arrow      as A
-import qualified Control.Foldl      as F
-import qualified Crypto.Hash.SHA256 as SHA256
-import qualified Data.Bits          as Bits
-import qualified Data.ByteString    as B
-import qualified Data.List          as L
-import qualified Data.Text          as T
-import qualified Data.Text.IO       as T
-import qualified Data.Time.Human    as H
-import qualified Data.Word          as W
-import qualified Lens.Family        as LF
-import qualified Pipes              as P
-import qualified Pipes.FileSystem   as PF
-import qualified Pipes.Group        as PG
-import qualified Pipes.Prelude      as P
-import qualified Pipes.Safe         as PS
-import qualified Pipes.Safe.Prelude as PS
-import qualified System.IO          as S
-import qualified System.Posix.Files as S
-import qualified GHC.IO.Exception   as G
+import qualified Control.Arrow                  as A
+import qualified Control.Foldl                  as F
+import qualified Crypto.Hash.SHA256             as SHA256
+import qualified Data.Bits                      as Bits
+import qualified Data.ByteString                as B
+import qualified Data.ByteString.Char8          as BC
+import qualified Data.List                      as L
+import qualified Data.Text                      as T
+import qualified Data.Text.Encoding             as T
+import qualified Data.Text.IO                   as T
+import qualified Data.Time.Human                as H
+import qualified Data.Word                      as W
+import qualified Lens.Family                    as LF
+import qualified Pipes                          as P
+import qualified Pipes.FileSystem               as PF
+import qualified Pipes.Group                    as PG
+import qualified Pipes.Prelude                  as P
+import qualified Pipes.Safe                     as PS
+import qualified Pipes.Safe.Prelude             as PS
+import qualified System.IO                      as S
+import qualified System.Posix.Files.ByteString  as S
 
-newtype ByteCount = ByteCount Integer deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
+type FilePath = RawFilePath
+
+newtype ByteCount = ByteCount W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
 newtype TimeElapsed = TimeElapsed Period deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
 newtype TimeRemaining = TimeRemaining Period deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
 newtype TransferRate = TransferRate Double deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
@@ -121,6 +125,9 @@ instance Pretty FileTreeHashProgress where
             Nothing -> ""
             Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
 
+instance Pretty FilePath where
+    pretty = T.decodeUtf8
+
 instance Pretty FileTreeCountProgress where
     pretty FileTreeCountProgress {..} = T.concat
         [      "[", "bytes: ", pretty ftcpBytesCounted, "]"
@@ -146,6 +153,9 @@ instance Pretty a => Pretty (Maybe a) where
 
 instance Pretty String where
     pretty = T.pack
+
+instance Pretty W.Word64 where
+        pretty = T.pack . show
 
 getFileSize :: FilePath -> IO ByteCount
 getFileSize = fmap (fromIntegral . S.fileSize) . S.getFileStatus
@@ -211,8 +221,8 @@ copyFile
     -> FilePath
     -> IO ()
 copyFile m s t =
-    S.withFile s S.ReadMode $ \i ->
-    S.withFile t S.WriteMode $ \o ->
+    S.withFile (BC.unpack s) S.ReadMode $ \i ->
+    S.withFile (BC.unpack t) S.WriteMode $ \o ->
     getFileSize s >>= \b ->
         transferData (map (fmap $ fileCopyProgress b) >-> m) i o
 
@@ -243,7 +253,7 @@ hashFileOld
     -> FilePath
     -> IO FileHash
 hashFileOld m f =
-    S.withFile f S.ReadMode $ \i ->
+    S.withFile (BC.unpack f) S.ReadMode $ \i ->
     getFileSize f >>= \b ->
     withMonitor (map (fmap $ fileHashProgress b) >-> m) byteCounter $ \p ->
         hashFileChunksP $ fromHandle i >-> p
@@ -306,7 +316,7 @@ descendantFiles :: PS.MonadSafe m => FilePath -> Producer FilePath m ()
 descendantFiles path = PF.onlyFiles <-< P.enumerate (PF.descendants PF.RootToLeaf path)
 
 readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
-readFile path = PS.withFile path S.ReadMode fromHandle
+readFile path = PS.withFile (BC.unpack path) S.ReadMode fromHandle
 
 hashFiles :: Monad m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
 hashFiles fs = hashFileHashesP $ P.sequence <-< P.map hashFileChunksP <-< P.map snd <-< fs
@@ -341,8 +351,8 @@ hashFilesSimple = P.sequence <-< P.map (PS.runSafeT . hashFileChunksP . readFile
 hashFileTreeSimple :: FilePath -> IO FileHash
 hashFileTreeSimple path = PS.runSafeT $ hashFileHashesP $ hashFilesSimple <-< descendantFiles path
 
-type FileCount = Integer
-type FileIndex = Integer
+type FileCount = W.Word64
+type FileIndex = W.Word64
 type FileChunk = ByteString
 
 -- progress: [  0 %] [   0/1024 files] [   0  B/50.0 GB] [waiting]
@@ -419,8 +429,8 @@ countFileTree' m f = PS.runSafeT $
             descendantFiles f >-> P.mapM (liftIO . getFileSize) >-> p
 
 data FileTreeCountProgress = FileTreeCountProgress
-    { ftcpFilesCounted :: FileCount
-    , ftcpBytesCounted :: ByteCount }
+    { ftcpFilesCounted :: !FileCount
+    , ftcpBytesCounted :: !ByteCount }
 
 foldFileTreeCountProgress :: F.Fold ByteCount FileTreeCountProgress
 foldFileTreeCountProgress = F.Fold
