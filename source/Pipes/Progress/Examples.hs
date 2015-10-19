@@ -259,16 +259,11 @@ fileHashProgress limit p = FileHashProgress
 
 data StreamEvent a b
     = StreamStart a
-    | StreamChunk a b
+    | StreamChunk b
     | StreamEnd   a
 
-streamId :: StreamEvent a b -> a
-streamId (StreamStart a  ) = a
-streamId (StreamChunk a _) = a
-streamId (StreamEnd   a  ) = a
-
 streamChunk :: StreamEvent a b -> Maybe b
-streamChunk (StreamChunk _ b) = Just b
+streamChunk (StreamChunk b) = Just b
 streamChunk _ = Nothing
 
 flatten
@@ -277,7 +272,7 @@ flatten
     -> Producer (StreamEvent a b) m r
 flatten abs = for abs $ \(a, bs) -> do
     yield                $ StreamStart a
-    for bs $ \b -> yield $ StreamChunk a b
+    for bs $ \b -> yield $ StreamChunk b
     yield                $ StreamEnd   a
 
 nest :: Monad m
@@ -363,9 +358,9 @@ data FileTreeHashProgress = FileTreeHashProgress
 
 updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
 updateFileTreeHashProgress p = \case
-    StreamStart f   -> p { fthpFileCurrent = Just f }
-    StreamChunk f c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
-    StreamEnd   f   -> p { fthpFileCurrent = Nothing
+    StreamStart f -> p { fthpFileCurrent = Just f }
+    StreamChunk c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
+    StreamEnd   f -> p { fthpFileCurrent = Nothing
                        , fthpFilesHashed = fthpFilesHashed p + 1 }
 
 initialFileTreeHashProgress :: FileTreeHashProgress
@@ -380,13 +375,16 @@ foldFileTreeHashProgress = F.Fold
 
 type FileStreamEvent = StreamEvent FilePath FileChunk
 
+sameStream (StreamEnd _) (StreamStart _) = False
+sameStream _ _ = True
+
 foldStreams :: (Eq o, Monad m)
     => F.Fold i j
     -> Producer (StreamEvent o i) m r
     -> Producer j m r
 foldStreams f = F.purely PG.folds f
     . PG.maps (>-> filterMap streamChunk)
-    . LF.view (PG.groupsBy (on (==) streamId))
+    . LF.view (PG.groupsBy' sameStream)
 
 filterMap :: Monad m => (a -> Maybe b) -> Pipe a b m r
 filterMap f = forever $
