@@ -6,8 +6,7 @@ import Pipes ((>->))
 import Pipes.Progress
 import Pipes.Progress.Examples
 
-import qualified System.IO          as S
-import qualified System.Posix.Files as S
+import qualified System.IO as S
 
 testHashFileTree :: IO ()
 testHashFileTree = do
