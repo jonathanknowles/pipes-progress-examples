@@ -15,6 +15,7 @@ cabal-version:       >=1.10
 
 library
     exposed-modules:
+        Data.Time.Human
         Pipes.Progress.Examples
     -- other-modules:
     -- other-extensions:
