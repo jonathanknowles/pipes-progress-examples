@@ -428,9 +428,19 @@ countFileTree' m f = PS.runSafeT $
         F.purely P.fold foldFileTreeCountProgress $
             descendantFiles f >-> P.mapM (liftIO . getFileSize) >-> p
 
+-- We can look at passing on more info, rather than making multiple system calls for each file.
+-- We should measure the number of system calls made for each file, and compare this to du -hs.
+-- Make a way to avoid folding twice (in the version that monitors progress).
+countFileTree
+    :: FilePath
+    -> IO FileTreeCountProgress
+countFileTree f = PS.runSafeT $
+    F.purely P.fold foldFileTreeCountProgress $
+        descendantFiles f >-> P.mapM (liftIO . getFileSize)
+
 data FileTreeCountProgress = FileTreeCountProgress
     { ftcpFilesCounted :: !FileCount
-    , ftcpBytesCounted :: !ByteCount }
+    , ftcpBytesCounted :: !ByteCount } deriving Show
 
 foldFileTreeCountProgress :: F.Fold ByteCount FileTreeCountProgress
 foldFileTreeCountProgress = F.Fold
