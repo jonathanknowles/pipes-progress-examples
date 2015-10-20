@@ -18,6 +18,7 @@ import Data.Monoid
 import Data.Text                       (Text)
 import Pipes                    hiding (every)
 import Pipes.ByteString         hiding (count, find, take, takeWhile, map)
+import Pipes.FileSystem                (isFile, FileInfo)
 import Pipes.Prelude            hiding (findi, fromHandle, toHandle, mapM_, show)
 import Pipes.Progress
 import Prelude                  hiding (map, readFile, take, takeWhile, FilePath)
@@ -312,11 +313,11 @@ nestedListsToProducers :: Monad m
     -> Producer (a, Producer b m ()) m ()
 nestedListsToProducers s = P.enumerate s >-> P.map (A.second P.enumerate)
 
-descendantFiles :: PS.MonadSafe m => FilePath -> Producer FilePath m ()
-descendantFiles path = PF.onlyFiles <-< P.enumerate (PF.descendants PF.RootToLeaf path)
+descendantFiles :: PS.MonadSafe m => FilePath -> Producer FileInfo m ()
+descendantFiles path = P.filter PF.isFile <-< P.enumerate (PF.descendants PF.RootToLeaf path)
 
-readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
-readFile path = PS.withFile (BC.unpack path) S.ReadMode fromHandle
+readFile :: PS.MonadSafe m => FileInfo -> Producer FileChunk m ()
+readFile info = PS.withFile (BC.unpack $ PF.filePath info) S.ReadMode fromHandle
 
 hashFiles :: Monad m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
 hashFiles fs = hashFileHashesP $ P.sequence <-< P.map hashFileChunksP <-< P.map snd <-< fs
@@ -345,7 +346,7 @@ hashFileHashes = F.Fold mappend mempty id
 -- Perhaps each function could take a consumer of some kind.
 -- In the end, we want a single monitor thread.
 
-hashFilesSimple :: (PS.MonadSafe m, MonadIO m) => Pipe FilePath FileHash m ()
+hashFilesSimple :: (PS.MonadSafe m, MonadIO m) => Pipe FileInfo FileHash m ()
 hashFilesSimple = P.sequence <-< P.map (PS.runSafeT . hashFileChunksP . readFile)
 
 hashFileTreeSimple :: FilePath -> IO FileHash
@@ -368,7 +369,7 @@ data FileTreeHashProgress = FileTreeHashProgress
 
 updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
 updateFileTreeHashProgress p = \case
-    StreamStart f -> p { fthpFileCurrent = Just f }
+    StreamStart f -> p { fthpFileCurrent = Just (PF.filePath f) }
     StreamChunk c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
     StreamEnd   f -> p { fthpFileCurrent = Nothing
                        , fthpFilesHashed = fthpFilesHashed p + 1 }
@@ -383,12 +384,12 @@ foldFileTreeHashProgress :: F.Fold FileStreamEvent FileTreeHashProgress
 foldFileTreeHashProgress = F.Fold
     updateFileTreeHashProgress initialFileTreeHashProgress id
 
-type FileStreamEvent = StreamEvent FilePath FileChunk
+type FileStreamEvent = StreamEvent FileInfo FileChunk
 
 sameStream (StreamEnd _) (StreamStart _) = False
 sameStream _ _ = True
 
-foldStreams :: (Eq o, Monad m)
+foldStreams :: Monad m
     => F.Fold i j
     -> Producer (StreamEvent o i) m r
     -> Producer j m r
@@ -426,7 +427,7 @@ countFileTree'
 countFileTree' m f = PS.runSafeT $
     withMonitor m foldFileTreeCountProgress $ \p ->
         F.purely P.fold foldFileTreeCountProgress $
-            descendantFiles f >-> P.mapM (liftIO . getFileSize) >-> p
+            descendantFiles f >-> P.map (fromIntegral . S.fileSize . PF.fileStatus) >-> p
 
 -- We can look at passing on more info, rather than making multiple system calls for each file.
 -- We should measure the number of system calls made for each file, and compare this to du -hs.
@@ -436,7 +437,7 @@ countFileTree
     -> IO FileTreeCountProgress
 countFileTree f = PS.runSafeT $
     F.purely P.fold foldFileTreeCountProgress $
-        descendantFiles f >-> P.mapM (liftIO . getFileSize)
+        descendantFiles f >-> P.map (fromIntegral . S.fileSize . PF.fileStatus)
 
 data FileTreeCountProgress = FileTreeCountProgress
     { ftcpFilesCounted :: !FileCount
@@ -444,8 +445,9 @@ data FileTreeCountProgress = FileTreeCountProgress
 
 foldFileTreeCountProgress :: F.Fold ByteCount FileTreeCountProgress
 foldFileTreeCountProgress = F.Fold
-        updateFileTreeCountProgress
-        initialFileTreeCountProgress id
+    updateFileTreeCountProgress
+    initialFileTreeCountProgress
+    id
 
 updateFileTreeCountProgress :: FileTreeCountProgress -> ByteCount -> FileTreeCountProgress
 updateFileTreeCountProgress p c = p

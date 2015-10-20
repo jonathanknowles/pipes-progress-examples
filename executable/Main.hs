@@ -11,16 +11,18 @@ import qualified System.IO as S
 testHashFileTree :: IO ()
 testHashFileTree = do
     hash <- hashFileTree' (every 0.5 >-> terminalMonitor) "/public/jsk/scratch"
+    --hash <- hashFileTree "/public/jsk/scratch"
     Prelude.print hash
 
 testCountFileTree :: IO ()
 testCountFileTree = do
     count <- countFileTree' (every 0.5 >-> terminalMonitor) "/public/jsk"
+    --count <- countFileTree "/public/jsk"
     Prelude.print count
 
 main :: IO ()
 main = do
     S.hSetBuffering S.stdout S.NoBuffering
-    testHashFileTree
+    --testHashFileTree
     testCountFileTree
 
