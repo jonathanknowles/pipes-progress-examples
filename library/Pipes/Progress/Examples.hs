@@ -3,47 +3,39 @@
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE RankNTypes                 #-}
-{-# LANGUAGE TupleSections              #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
 
 module Pipes.Progress.Examples where
 
-import Control.Applicative
-import Control.Concurrent       hiding (yield)
-import Control.Exception               (evaluate, try, throwIO)
-import Control.Monad
-import Data.Function                   (on)
-import Data.Monoid
+import Control.Monad                   (forever)
+import Control.Monad.Trans             (MonadIO, liftIO)
+import Crypto.Hash.SHA256.Extra        (SHA256, foldChunks, foldHashes)
+import Data.ByteString                 (ByteString)
+import Data.Monoid                     ((<>))
 import Data.Text                       (Text)
-import Pipes                    hiding (every)
-import Pipes.ByteString         hiding (count, find, take, takeWhile, map)
+import Pipes                           ((>->), (<-<), Consumer, Pipe, Producer, await, runEffect, yield)
 import Pipes.FileSystem                (isFile, FileInfo)
-import Pipes.Prelude            hiding (findi, fromHandle, toHandle, mapM_, show)
-import Pipes.Progress
-import Prelude                  hiding (map, readFile, take, takeWhile, FilePath)
-import System.Posix             hiding (ByteCount)
+import Pipes.Nested                    (StreamEvent (..))
+import Pipes.Progress                  (Monitor, Period (..))
+import Prelude                  hiding (FilePath, readFile)
 import System.Posix.ByteString         (RawFilePath)
-import Text.Printf (printf)
-import Text.Pretty
+import Text.Printf                     (printf)
+import Text.Pretty                     (Pretty, pretty)
 
-import qualified Control.Arrow                  as A
 import qualified Control.Foldl                  as F
-import qualified Crypto.Hash.SHA256             as SHA256
-import qualified Data.Bits                      as Bits
+import qualified Crypto.Hash.SHA256.Extra       as SHA256
 import qualified Data.ByteString                as B
 import qualified Data.ByteString.Char8          as BC
-import qualified Data.List                      as L
 import qualified Data.Text                      as T
 import qualified Data.Text.Encoding             as T
 import qualified Data.Text.IO                   as T
 import qualified Data.Time.Human                as H
 import qualified Data.Word                      as W
-import qualified Lens.Family                    as LF
 import qualified Pipes                          as P
+import qualified Pipes.ByteString               as PB
 import qualified Pipes.FileSystem               as PF
-import qualified Pipes.Group                    as PG
+import qualified Pipes.Nested                   as PN
 import qualified Pipes.Prelude                  as P
+import qualified Pipes.Progress                 as PP
 import qualified Pipes.Safe                     as PS
 import qualified Pipes.Safe.Prelude             as PS
 import qualified System.IO                      as S
@@ -65,8 +57,7 @@ initProgress bytesTarget = RichFileCopyProgress
     , rfcpBytesTarget   = bytesTarget
     , rfcpTimeElapsed   = 0
     , rfcpTimeRemaining = 0
-    , rfcpTransferRate  = 0
-    }
+    , rfcpTransferRate  = 0 }
 
 data Percent a = Percent a a
 
@@ -129,10 +120,10 @@ instance Pretty FileTreeHashProgress where
 instance Pretty FilePath where
     pretty = T.decodeUtf8
 
-instance Pretty FileTreeCountProgress where
-    pretty FileTreeCountProgress {..} = T.concat
-        [      "[", "bytes: ", pretty ftcpBytesCounted, "]"
-        , " ", "[", "files: ", pretty ftcpFilesCounted, "]" ]
+instance Pretty FileByteCount where
+    pretty FileByteCount {..} = T.concat
+        [      "[", "bytes: ", pretty byteCount, "]"
+        , " ", "[", "files: ", pretty fileCount, "]" ]
 
 instance Pretty RichFileCopyProgress where
     pretty p = T.concat
@@ -164,9 +155,6 @@ getFileSize = fmap (fromIntegral . S.fileSize) . S.getFileStatus
 progressComplete :: RichFileCopyProgress -> Bool
 progressComplete p = rfcpBytesCopied p == rfcpBytesTarget p
 
-returnToStart :: Text
-returnToStart = "\r\ESC[K"
-
 data RichFileCopyProgress = RichFileCopyProgress
     { rfcpBytesCopied   :: ByteCount
     , rfcpBytesTarget   :: ByteCount
@@ -192,8 +180,11 @@ terminalMonitor :: Pretty a => Monitor a
 terminalMonitor = forever $ do
     update <- await
     liftIO $
-        (if isFinal update then T.putStrLn else T.putStr)
-        (returnToStart <> pretty (value update))
+        (if PP.isFinal update then T.putStrLn else T.putStr)
+        (returnToStart <> pretty (PP.value update))
+
+returnToStart :: Text
+returnToStart = "\r\ESC[K"
 
 byteCounter :: F.Fold ByteString ByteCount
 byteCounter = F.Fold step 0 id where step i j = i + chunkLength j
@@ -204,8 +195,8 @@ transferData
     -> S.Handle
     -> IO ()
 transferData m i o =
-    withMonitor (map (fmap dataTransferProgress) >-> m) byteCounter $ \p ->
-        runEffect $ fromHandle i >-> p >-> toHandle o
+    PP.withMonitor (P.map (fmap dataTransferProgress) >-> m) 0 (F.purely P.scan byteCounter) $ \p ->
+        runEffect $ PB.fromHandle i >-> p >-> PB.toHandle o
 
 chunkLength :: ByteString -> ByteCount
 chunkLength = ByteCount . fromIntegral . B.length
@@ -225,7 +216,7 @@ copyFile m s t =
     S.withFile (BC.unpack s) S.ReadMode $ \i ->
     S.withFile (BC.unpack t) S.WriteMode $ \o ->
     getFileSize s >>= \b ->
-        transferData (map (fmap $ fileCopyProgress b) >-> m) i o
+        transferData (P.map (fmap $ fileCopyProgress b) >-> m) i o
 
 data FileCopyProgress = FileCopyProgress
     { fcpBytesCopied    :: ByteCount
@@ -237,18 +228,6 @@ fileCopyProgress limit p = FileCopyProgress
     { fcpBytesCopied    =         dtpBytesTransferred p
     , fcpBytesRemaining = limit - dtpBytesTransferred p }
 
-data FileHash = FileHash !ByteString
-
-instance Monoid FileHash where
-    mempty = FileHash $ B.replicate 32 0
-    mappend (FileHash a) (FileHash b) = FileHash $ B.pack $ B.zipWith Bits.xor a b
-
-instance Show FileHash where
-    show (FileHash a) = Prelude.concatMap showHex $ B.unpack a
-
-showHex :: W.Word8 -> String
-showHex = printf "%02x"
-
 hashFileOld
     :: Monitor FileHashProgress
     -> FilePath
@@ -256,8 +235,8 @@ hashFileOld
 hashFileOld m f =
     S.withFile (BC.unpack f) S.ReadMode $ \i ->
     getFileSize f >>= \b ->
-    withMonitor (map (fmap $ fileHashProgress b) >-> m) byteCounter $ \p ->
-        hashFileChunksP $ fromHandle i >-> p
+    PP.withMonitor (P.map (fmap $ fileHashProgress b) >-> m) 0 (F.purely P.scan byteCounter) $ \p ->
+        hashFileChunksP $ PB.fromHandle i >-> p
 
 data FileHashProgress = FileHashProgress
     { fhpBytesHashed    :: ByteCount
@@ -268,89 +247,26 @@ fileHashProgress limit p = FileHashProgress
     { fhpBytesHashed    =         p
     , fhpBytesRemaining = limit - p }
 
-data StreamEvent a b
-    = StreamStart a
-    | StreamChunk b
-    | StreamEnd   a
-
-streamChunk :: StreamEvent a b -> Maybe b
-streamChunk (StreamChunk b) = Just b
-streamChunk _ = Nothing
-
-flatten
-    :: Monad m
-    => Producer (a, Producer b m r) m r
-    -> Producer (StreamEvent a b) m r
-flatten abs = for abs $ \(a, bs) -> do
-    yield                $ StreamStart a
-    for bs $ \b -> yield $ StreamChunk b
-    yield                $ StreamEnd   a
-
-nest :: Monad m
-     => (a -> Producer b m ())
-     -> (b -> Producer c m ())
-     -> a -> Producer (b, Producer c m ()) m ()
-nest aToBs bToCs a = P.map (A.second P.enumerate)
-        <-< (P.enumerate . nestLists x y) a
-    where
-        x = P.Select . aToBs
-        y = P.Select . bToCs
-
-nestLists :: Monad m
-    => (a -> ListT m b)
-    -> (b -> ListT m c)
-    -> a -> ListT m (b, ListT m c)
-nestLists aToBs bToCs =
-    aToBs >=> \b -> pure (b, bToCs b)
-
-nestedProducersToLists :: Monad m
-    => Producer (a, Producer b m ()) m ()
-    -> ListT m (a, ListT m b)
-nestedProducersToLists s = P.Select $ s >-> P.map (A.second P.Select)
-
-nestedListsToProducers :: Monad m
-    => ListT m (a, ListT m b)
-    -> Producer (a, Producer b m ()) m ()
-nestedListsToProducers s = P.enumerate s >-> P.map (A.second P.enumerate)
-
-descendantFiles :: PS.MonadSafe m => FilePath -> Producer FileInfo m ()
-descendantFiles path = P.filter PF.isFile <-< P.enumerate (PF.descendants PF.RootToLeaf path)
-
 readFile :: PS.MonadSafe m => FileInfo -> Producer FileChunk m ()
-readFile info = PS.withFile (BC.unpack $ PF.filePath info) S.ReadMode fromHandle
+readFile info = PS.withFile (BC.unpack $ PF.filePath info) S.ReadMode PB.fromHandle
+
+type FileHash = SHA256
 
 hashFiles :: Monad m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
 hashFiles fs = hashFileHashesP $ P.sequence <-< P.map hashFileChunksP <-< P.map snd <-< fs
 
 hashFileChunksP :: Monad m => Producer FileChunk m () -> m FileHash
-hashFileChunksP = F.purely P.fold hashFileChunks
+hashFileChunksP = F.purely P.fold SHA256.foldChunks
 
 hashFileHashesP :: Monad m => Producer FileHash m () -> m FileHash
-hashFileHashesP = F.purely P.fold hashFileHashes
-
-hashFileChunks :: F.Fold FileChunk FileHash
-hashFileChunks = F.Fold SHA256.update SHA256.init (FileHash . SHA256.finalize)
-
-hashFileHashes :: F.Fold FileHash FileHash
-hashFileHashes = F.Fold mappend mempty id
-
--- it should be a fold that gets passed as the "counting function". That could be passed to SCAN:
-
--- write a stack overflow question about how to use groups
--- assume tuples (index, filepath, filechunk)
--- assume an existing function that's capable of computing the hash of a producer of filechunks
-
--- ideas
--- Provide a simple interface for each part of the flow to write to.
--- Write a mapping in the outer wrapper, so when the inner flow writes outwards, it is rewritten outward but with a different type.
--- Perhaps each function could take a consumer of some kind.
--- In the end, we want a single monitor thread.
+hashFileHashesP = F.purely P.fold SHA256.foldHashes
 
 hashFilesSimple :: (PS.MonadSafe m, MonadIO m) => Pipe FileInfo FileHash m ()
 hashFilesSimple = P.sequence <-< P.map (PS.runSafeT . hashFileChunksP . readFile)
 
 hashFileTreeSimple :: FilePath -> IO FileHash
-hashFileTreeSimple path = PS.runSafeT $ hashFileHashesP $ hashFilesSimple <-< descendantFiles path
+hashFileTreeSimple path = PS.runSafeT $ hashFileHashesP $
+    hashFilesSimple <-< PF.descendantFiles PF.RootToLeaf path
 
 type FileCount = W.Word64
 type FileIndex = W.Word64
@@ -386,25 +302,8 @@ foldFileTreeHashProgress = F.Fold
 
 type FileStreamEvent = StreamEvent FileInfo FileChunk
 
-sameStream (StreamEnd _) (StreamStart _) = False
-sameStream _ _ = True
-
-foldStreams :: Monad m
-    => F.Fold i j
-    -> Producer (StreamEvent o i) m r
-    -> Producer j m r
-foldStreams f = F.purely PG.folds f
-    . PG.maps (>-> filterMap streamChunk)
-    . LF.view (PG.groupsBy' sameStream)
-
-filterMap :: Monad m => (a -> Maybe b) -> Pipe a b m r
-filterMap f = forever $
-    f <$> await >>= \case
-        Nothing -> pure ()
-        Just b  -> yield b
-
 streamFileTree :: PS.MonadSafe m => FilePath -> Producer FileStreamEvent m ()
-streamFileTree = flatten . nest descendantFiles readFile
+streamFileTree = PN.flatten . PN.nest (PF.descendantFiles PF.RootToLeaf) readFile
 
 hashFileTree :: FilePath -> IO FileHash
 hashFileTree = PS.runSafeT . hashFileStream . streamFileTree
@@ -414,48 +313,56 @@ hashFileTree'
     -> FilePath
     -> IO FileHash
 hashFileTree' m f = PS.runSafeT $
-    withMonitor m foldFileTreeHashProgress $ \p ->
+    PP.withMonitor m initialFileTreeHashProgress (F.purely P.scan foldFileTreeHashProgress) $ \p ->
         hashFileStream (streamFileTree f >-> p)
 
 hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
-hashFileStream = hashFileHashesP . foldStreams hashFileChunks
+hashFileStream = hashFileHashesP . PN.foldStreams SHA256.foldChunks
 
-countFileTree'
-    :: Monitor FileTreeCountProgress
+calculateDiskUsage'
+    :: Monitor FileByteCount
     -> FilePath
-    -> IO FileTreeCountProgress
-countFileTree' m f = PS.runSafeT $
-    withMonitor m foldFileTreeCountProgress $ \p ->
-        F.purely P.fold foldFileTreeCountProgress $
-            descendantFiles f >-> P.map (fromIntegral . S.fileSize . PF.fileStatus) >-> p
+    -> IO (Maybe FileByteCount)
+calculateDiskUsage' m f = PS.runSafeT $
+    PP.withMonitor m initialFileByteCount P.cat $ \p ->
+        P.last $ PF.descendantFiles PF.RootToLeaf f
+            >-> P.mapM (liftIO . getFileSize . PF.filePath)
+            >-> F.purely P.scan foldFileByteCount
+            >-> p
 
--- We can look at passing on more info, rather than making multiple system calls for each file.
--- We should measure the number of system calls made for each file, and compare this to du -hs.
--- Make a way to avoid folding twice (in the version that monitors progress).
-countFileTree
+calculateDiskUsage
     :: FilePath
-    -> IO FileTreeCountProgress
-countFileTree f = PS.runSafeT $
-    F.purely P.fold foldFileTreeCountProgress $
-        descendantFiles f >-> P.map (fromIntegral . S.fileSize . PF.fileStatus)
+    -> IO FileByteCount
+calculateDiskUsage f = PS.runSafeT $
+    F.purely P.fold foldFileByteCount $
+        PF.descendantFiles PF.RootToLeaf f
+            >-> P.mapM (liftIO . getFileSize . PF.filePath)
 
-data FileTreeCountProgress = FileTreeCountProgress
-    { ftcpFilesCounted :: !FileCount
-    , ftcpBytesCounted :: !ByteCount } deriving Show
+countDescendantFiles
+    :: FilePath
+    -> IO Int
+countDescendantFiles f = PS.runSafeT $
+    P.length $
+        PF.descendantFiles PF.RootToLeaf f
 
-foldFileTreeCountProgress :: F.Fold ByteCount FileTreeCountProgress
-foldFileTreeCountProgress = F.Fold
-    updateFileTreeCountProgress
-    initialFileTreeCountProgress
+data FileByteCount = FileByteCount
+    { fileCount :: {-# UNPACK #-} !FileCount
+    , byteCount :: {-# UNPACK #-} !ByteCount } deriving Show
+
+foldFileByteCount :: F.Fold ByteCount FileByteCount
+foldFileByteCount = F.Fold
+    updateFileByteCount
+    initialFileByteCount
     id
 
-updateFileTreeCountProgress :: FileTreeCountProgress -> ByteCount -> FileTreeCountProgress
-updateFileTreeCountProgress p c = p
-    { ftcpFilesCounted = ftcpFilesCounted p + 1
-    , ftcpBytesCounted = ftcpBytesCounted p + c }
+updateFileByteCount :: FileByteCount -> ByteCount -> FileByteCount
+updateFileByteCount p c = p
+    { fileCount = fileCount p + 1
+    , byteCount = byteCount p + c }
+{-# INLINE updateFileByteCount #-}
 
-initialFileTreeCountProgress :: FileTreeCountProgress
-initialFileTreeCountProgress = FileTreeCountProgress
-    { ftcpFilesCounted = 0
-    , ftcpBytesCounted = 0 }
+initialFileByteCount :: FileByteCount
+initialFileByteCount = FileByteCount
+    { fileCount = 0
+    , byteCount = 0 }
 

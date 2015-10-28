@@ -14,15 +14,22 @@ testHashFileTree = do
     --hash <- hashFileTree "/public/jsk/scratch"
     Prelude.print hash
 
-testCountFileTree :: IO ()
-testCountFileTree = do
-    count <- countFileTree' (every 0.5 >-> terminalMonitor) "/public/jsk"
-    --count <- countFileTree "/public/jsk"
+testCalculateDiskUsage :: IO ()
+testCalculateDiskUsage = do
+    --count <- calculateDiskUsage' (every 0.5 >-> terminalMonitor) "/public/jsk"
+    count <- calculateDiskUsage "/public/jsk"
+    Prelude.print count
+
+testCountDescendantFiles :: IO ()
+testCountDescendantFiles = do
+    --count <- countDescendantFiles' (every 0.5 >-> terminalMonitor) "/public/jsk"
+    count <- countDescendantFiles "/public/jsk"
     Prelude.print count
 
 main :: IO ()
 main = do
     S.hSetBuffering S.stdout S.NoBuffering
     --testHashFileTree
-    testCountFileTree
+    testCalculateDiskUsage
+    --testCountDescendantFiles
 

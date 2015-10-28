@@ -15,7 +15,10 @@ cabal-version:       >=1.10
 
 library
     exposed-modules:
+        Crypto.Hash.SHA256.Extra
         Data.Time.Human
+        Pipes.Extra
+        Pipes.Nested
         Pipes.Progress.Examples
     -- other-modules:
     -- other-extensions:
@@ -25,6 +28,7 @@ library
         cryptohash,
         foldl,
         lens-family-core,
+        mtl,
         pipes,
         pipes-bytestring,
         pipes-filesystem,
@@ -41,6 +45,7 @@ library
         -O3
         -threaded
         -rtsopts
+        -fprof-auto
         -with-rtsopts=-N
 
 executable              pipes-progress-examples
@@ -59,3 +64,19 @@ executable              pipes-progress-examples
         -rtsopts
         -with-rtsopts=-N
 
+executable              pipes-progress-examples-profiled
+    main-is:            Main.hs
+    build-depends:
+        base >=4.8 && <4.9,
+        pipes,
+        pipes-progress,
+        pipes-progress-examples,
+        unix
+    hs-source-dirs:      executable
+    default-language:    Haskell2010
+    ghc-options:
+        -O3
+        -threaded
+        -rtsopts
+        -fprof-auto
+        "-with-rtsopts=-N -p -s -h -i0.1"
