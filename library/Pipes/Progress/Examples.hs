@@ -319,6 +319,54 @@ hashFileTree' m f = PS.runSafeT $
 hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
 hashFileStream = hashFileHashesP . PN.foldStreams SHA256.foldChunks
 
+-- Event-based:
+--
+-- fileTree     :: FilePath -> Producer FilePathEvent       IO ()
+-- hashFile     :: FilePath -> Producer HashFileEvent       IO FileHash
+-- hashFileTree :: FilePath -> Producer HashFileTreeEvent   IO FileTreeHash
+-- diskUsage    :: FilePath -> Producer FileByteCount       IO FileByteCount
+
+-- Signal-based:
+
+-- hashFileS     :: FilePath -> Producer HashFileProgress     IO FileHash
+-- hashFileTreeS :: FilePath -> Producer HashFileTreeProgress IO FileTreeHash
+-- diskUsageS    :: FilePath -> Producer FileByteCount        IO FileByteCount
+
+-- Maybe the signal based thing can just be a context-dependent fold
+--
+-- class EventToSignal E S | E -> S where
+--     foldEvents :: Fold E S
+--
+-- Then we have:
+--
+-- usage <- diskUsage path -> toSignal >-> samplePeriodically 1 >-> toConsole
+-- hash <- hashFile path >-> toSignal >-> samplePeriodically 1 >-> toConsole
+-- copyFile p q >-> samplePeriodically 1 >-> toConsole
+
+-- Write a function:
+--
+-- samplePeriodically :: TimePeriod -> Producer Signal IO Result > Producer Signal IO Result
+-- samplePeriodically :: TimePeriod -> Pipe Status Status IO Result
+--
+-- type EventSource e m r = Event e => Producer e m r
+-- type SignalSource s m r = Signal s => Producer s m r
+--
+-- toSignal :: (Event e, Signal s) => Pipe e s m r
+
+-- hashFile     :: FilePath -> FileHash
+-- hashFileTree :: FilePath -> FileTreeHash
+-- diskUsage    :: FilePath -> FileByteCount
+--
+-- maybe need some way to associate a timestamp with each moment
+--
+-- for each file in fileTree
+--     yield $ FileOpen fileName
+--     for each fileHashProgress in hashFile
+--         yield $ FileRead size
+--     yield $ FileClose fileName
+--
+-- perhaps the progress type could be combined with the result type?
+
 calculateDiskUsage'
     :: Monitor FileByteCount
     -> FilePath
