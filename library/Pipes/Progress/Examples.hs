@@ -419,19 +419,8 @@ initialFileByteCount = FileByteCount
 --
 -- perhaps the progress type could be combined with the result type?
 
-type HashFileEvent = ByteCount
-
-data Terminated a = Value a | End
-
 returnDownstream :: Monad m => Proxy a' a b' b m r -> Proxy a' a b' (Either r b) m r'
 returnDownstream = (forever . respond . Left =<<) . (respond . Right <\\)
-
-returnLastRight :: Monad m => b -> Consumer (Either a b) m b
-returnLastRight last = await >>= either (const $ return last) returnLastRight
-
-takeRights :: Monad m => Pipe (Either a b) b m r
-takeRights = forever $ await >>= either (const $ pure ()) yield
-{-# INLINABLE takeRights #-}
 
 foldRights:: Monad m => (x -> a -> x) -> x -> (x -> b) -> Consumer (Either e a) m b
 foldRights step begin done = go begin where
@@ -440,25 +429,11 @@ foldRights step begin done = go begin where
         ((go $!) . step x)
 {-# INLINABLE foldRights #-}
 
-scanRights :: Monad m => (x -> a -> x) -> x -> (x -> b) -> Pipe (Either e a) (Either e b) m r
-scanRights step begin done = go begin
-  where
-    go x = await >>= \case
-        Left e -> do
-            yield (Left e)
-            go $! x
-        Right a -> do
-            let x' = step x a
-            yield (Right $ done x')
-            go $! x'
-{-# INLINABLE scanRights #-}
-
 hashFileX :: MonadIO m => S.Handle -> Producer ByteCount m FileHash
-hashFileX h =
-    returnDownstream (PB.fromHandle h)
-        >-> P.tee (F.purely foldRights SHA256.foldChunks)
-        >-> takeRights
-        >-> P.map (fromIntegral . B.length)
+hashFileX h = returnDownstream (PB.fromHandle h)
+    >-> P.tee (F.purely foldRights SHA256.foldChunks)
+    >-> P.concat
+    >-> P.map (fromIntegral . B.length)
 
 hashFileZ :: S.Handle -> IO FileHash
 hashFileZ = drain . hashFileX
