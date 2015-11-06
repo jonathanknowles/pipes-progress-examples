@@ -429,11 +429,17 @@ foldRights step begin done = go begin where
         ((go $!) . step x)
 {-# INLINABLE foldRights #-}
 
-hashFileX :: MonadIO m => S.Handle -> Producer ByteCount m FileHash
+type HashFileProgressEvent = ByteCount
+type HashFileProgress = ByteCount
+
+hashFileX :: MonadIO m => S.Handle -> Producer HashFileProgressEvent m FileHash
 hashFileX h = returnDownstream (PB.fromHandle h)
     >-> P.tee (F.purely foldRights SHA256.foldChunks)
     >-> P.concat
     >-> P.map (fromIntegral . B.length)
+
+hashFileY :: MonadIO m => S.Handle -> Producer HashFileProgress m FileHash
+hashFileY = (>-> P.scan (+) 0 id) . hashFileX
 
 hashFileZ :: S.Handle -> IO FileHash
 hashFileZ = drain . hashFileX
