@@ -6,13 +6,15 @@
 
 module Pipes.Progress.Examples where
 
+import Control.Foldl                   (Fold)
 import Control.Monad                   (forever)
 import Control.Monad.Trans             (MonadIO, liftIO)
 import Crypto.Hash.SHA256.Extra        (SHA256, foldChunks, foldHashes)
 import Data.ByteString                 (ByteString)
 import Data.Monoid                     ((<>))
 import Data.Text                       (Text)
-import Pipes                           ((>->), (<-<), Consumer, Pipe, Producer, await, runEffect, yield)
+import Pipes                           ((>->), (<-<), Consumer, Pipe, Producer, Proxy, await, runEffect, yield)
+import Pipes.Core                      ((<\\), respond)
 import Pipes.FileSystem                (isFile, FileInfo)
 import Pipes.Nested                    (StreamEvent (..))
 import Pipes.Progress                  (Monitor, Period (..))
@@ -22,6 +24,7 @@ import Text.Printf                     (printf)
 import Text.Pretty                     (Pretty, pretty)
 
 import qualified Control.Foldl                  as F
+import qualified Crypto.Hash.SHA256             as SHA256
 import qualified Crypto.Hash.SHA256.Extra       as SHA256
 import qualified Data.ByteString                as B
 import qualified Data.ByteString.Char8          as BC
@@ -319,6 +322,55 @@ hashFileTree' m f = PS.runSafeT $
 hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
 hashFileStream = hashFileHashesP . PN.foldStreams SHA256.foldChunks
 
+calculateDiskUsage'
+    :: Monitor FileByteCount
+    -> FilePath
+    -> IO (Maybe FileByteCount)
+calculateDiskUsage' m f = PS.runSafeT $
+    PP.withMonitor m initialFileByteCount P.cat $ \p ->
+        P.last $ PF.descendantFiles PF.RootToLeaf f
+            >-> P.mapM (liftIO . getFileSize . PF.filePath)
+            >-> F.purely P.scan foldFileByteCount
+            >-> p
+
+calculateDiskUsage
+    :: FilePath
+    -> IO FileByteCount
+calculateDiskUsage f = PS.runSafeT $
+    F.purely P.fold foldFileByteCount $
+        PF.descendantFiles PF.RootToLeaf f
+            >-> P.mapM (liftIO . getFileSize . PF.filePath)
+
+countDescendantFiles
+    :: FilePath
+    -> IO Int
+countDescendantFiles f = PS.runSafeT $
+    P.length $
+        PF.descendantFiles PF.RootToLeaf f
+
+data FileByteCount = FileByteCount
+    { fileCount :: {-# UNPACK #-} !FileCount
+    , byteCount :: {-# UNPACK #-} !ByteCount } deriving Show
+
+foldFileByteCount :: F.Fold ByteCount FileByteCount
+foldFileByteCount = F.Fold
+    updateFileByteCount
+    initialFileByteCount
+    id
+
+updateFileByteCount :: FileByteCount -> ByteCount -> FileByteCount
+updateFileByteCount p c = p
+    { fileCount = fileCount p + 1
+    , byteCount = byteCount p + c }
+{-# INLINE updateFileByteCount #-}
+
+initialFileByteCount :: FileByteCount
+initialFileByteCount = FileByteCount
+    { fileCount = 0
+    , byteCount = 0 }
+
+-- Experimental code below.
+
 -- Event-based:
 --
 -- fileTree     :: FilePath -> Producer FilePathEvent       IO ()
@@ -367,50 +419,50 @@ hashFileStream = hashFileHashesP . PN.foldStreams SHA256.foldChunks
 --
 -- perhaps the progress type could be combined with the result type?
 
-calculateDiskUsage'
-    :: Monitor FileByteCount
-    -> FilePath
-    -> IO (Maybe FileByteCount)
-calculateDiskUsage' m f = PS.runSafeT $
-    PP.withMonitor m initialFileByteCount P.cat $ \p ->
-        P.last $ PF.descendantFiles PF.RootToLeaf f
-            >-> P.mapM (liftIO . getFileSize . PF.filePath)
-            >-> F.purely P.scan foldFileByteCount
-            >-> p
+type HashFileEvent = ByteCount
 
-calculateDiskUsage
-    :: FilePath
-    -> IO FileByteCount
-calculateDiskUsage f = PS.runSafeT $
-    F.purely P.fold foldFileByteCount $
-        PF.descendantFiles PF.RootToLeaf f
-            >-> P.mapM (liftIO . getFileSize . PF.filePath)
+data Terminated a = Value a | End
 
-countDescendantFiles
-    :: FilePath
-    -> IO Int
-countDescendantFiles f = PS.runSafeT $
-    P.length $
-        PF.descendantFiles PF.RootToLeaf f
+returnDownstream :: Monad m => Proxy a' a b' b m r -> Proxy a' a b' (Either r b) m r'
+returnDownstream = (forever . respond . Left =<<) . (respond . Right <\\)
 
-data FileByteCount = FileByteCount
-    { fileCount :: {-# UNPACK #-} !FileCount
-    , byteCount :: {-# UNPACK #-} !ByteCount } deriving Show
+returnLastRight :: Monad m => b -> Consumer (Either a b) m b
+returnLastRight last = await >>= either (const $ return last) returnLastRight
 
-foldFileByteCount :: F.Fold ByteCount FileByteCount
-foldFileByteCount = F.Fold
-    updateFileByteCount
-    initialFileByteCount
-    id
+takeRights :: Monad m => Pipe (Either a b) b m r
+takeRights = forever $ await >>= either (const $ pure ()) yield
+{-# INLINABLE takeRights #-}
 
-updateFileByteCount :: FileByteCount -> ByteCount -> FileByteCount
-updateFileByteCount p c = p
-    { fileCount = fileCount p + 1
-    , byteCount = byteCount p + c }
-{-# INLINE updateFileByteCount #-}
+foldRights:: Monad m => (x -> a -> x) -> x -> (x -> b) -> Consumer (Either e a) m b
+foldRights step begin done = go begin where
+    go x = await >>= either
+        (const $ return $ done x)
+        ((go $!) . step x)
+{-# INLINABLE foldRights #-}
 
-initialFileByteCount :: FileByteCount
-initialFileByteCount = FileByteCount
-    { fileCount = 0
-    , byteCount = 0 }
+scanRights :: Monad m => (x -> a -> x) -> x -> (x -> b) -> Pipe (Either e a) (Either e b) m r
+scanRights step begin done = go begin
+  where
+    go x = await >>= \case
+        Left e -> do
+            yield (Left e)
+            go $! x
+        Right a -> do
+            let x' = step x a
+            yield (Right $ done x')
+            go $! x'
+{-# INLINABLE scanRights #-}
+
+hashFileX :: MonadIO m => S.Handle -> Producer ByteCount m FileHash
+hashFileX h =
+    returnDownstream (PB.fromHandle h)
+        >-> P.tee (F.purely foldRights SHA256.foldChunks)
+        >-> takeRights
+        >-> P.map (fromIntegral . B.length)
+
+hashFileZ :: S.Handle -> IO FileHash
+hashFileZ = drain . hashFileX
+
+drain :: Monad m => Producer a m r -> m r
+drain = runEffect . (>-> P.drain)
 

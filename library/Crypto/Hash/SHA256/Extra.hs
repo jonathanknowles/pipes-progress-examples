@@ -17,7 +17,7 @@ import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString    as B
 import qualified Data.Word          as W
 
-data SHA256 = SHA256 !ByteString
+data SHA256 = SHA256 !ByteString deriving Eq
 
 instance Monoid SHA256 where
     mempty = SHA256 $ B.replicate 32 0
