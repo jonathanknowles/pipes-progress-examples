@@ -10,8 +10,12 @@ import qualified System.IO as S
 
 testHashFileTree :: IO ()
 testHashFileTree = do
-    hash <- hashFileTree' (every 0.5 >-> terminalMonitor) "/public/jsk/scratch"
-    --hash <- hashFileTree "/public/jsk/scratch"
+    hash <- hashFileTree' (every 0.5 >-> terminalMonitor) "/public/jsk/scratch/small"
+    Prelude.print hash
+
+testHashFileTreeExperimental :: IO ()
+testHashFileTreeExperimental = do
+    hash <- hashFileTreeZ "/public/jsk/scratch/small"
     Prelude.print hash
 
 testCalculateDiskUsage :: IO ()
@@ -34,7 +38,5 @@ testNewStyle = do
 main :: IO ()
 main = do
     S.hSetBuffering S.stdout S.NoBuffering
-    --testHashFileTree
-    --testCalculateDiskUsage
-    --testCountDescendantFiles
-    testNewStyle
+    testHashFileTree
+    testHashFileTreeExperimental

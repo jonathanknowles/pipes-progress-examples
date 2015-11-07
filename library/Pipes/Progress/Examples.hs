@@ -14,7 +14,7 @@ import Crypto.Hash.SHA256.Extra        (SHA256, foldChunks, foldHashes)
 import Data.ByteString                 (ByteString)
 import Data.Monoid                     ((<>))
 import Data.Text                       (Text)
-import Pipes                           ((>->), (<-<), Consumer, Pipe, Producer, Proxy, await, runEffect, yield)
+import Pipes                           ((>->), (<-<), Consumer, Pipe, Producer, Proxy, await, for, runEffect, yield)
 import Pipes.Core                      ((<\\), respond)
 import Pipes.FileSystem                (isFile, FileInfo)
 import Pipes.Nested                    (StreamEvent (..))
@@ -478,6 +478,33 @@ hashFileY = (>-> P.scan (+) 0 id) . hashFileX
 
 hashFileZ :: FilePath -> IO FileHash
 hashFileZ = PS.runSafeT . drain . hashFileX
+
+hashFileTreeX :: MonadSafe m => FilePath -> Producer HashFileTreeProgressEvent m FileHash
+hashFileTreeX p =
+    signalLast stream
+        >-> P.tee (foldReturnLast step mempty id)
+        >-> unsignalLast
+    where
+        step h = \case
+            HashFileEnd g -> mappend h g
+            _             -> h
+        stream = for (PF.descendantFiles PF.RootToLeaf p) $ \i -> do
+            let q = PF.filePath i
+            yield $ HashFileStart q
+            yield . HashFileEnd =<< hashFileX q >-> P.map HashFileChunk
+
+hashFileTreeZ :: FilePath -> IO FileHash
+hashFileTreeZ = PS.runSafeT . drain . hashFileTreeX
+
+data HashFileTreeProgressEvent
+    = HashFileStart !FilePath
+    | HashFileChunk !ByteCount
+    | HashFileEnd   !FileHash
+
+data HashFileTreeProgress = HashFileTreeProgress
+    { hftpFileCurrent :: Maybe FilePath
+    , hftpFilesHashed :: !FileCount
+    , hftpBytesHashed :: !ByteCount }
 
 drain :: Monad m => Producer a m r -> m r
 drain = runEffect . (>-> P.drain)
