@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
@@ -421,15 +422,42 @@ initialFileByteCount = FileByteCount
 --
 -- perhaps the progress type could be combined with the result type?
 
-returnDownstream :: Monad m => Proxy a' a b' b m r -> Proxy a' a b' (Either r b) m r'
-returnDownstream = (forever . respond . Left =<<) . (respond . Right <\\)
+data Terminated a = Value !a | End
 
-foldRights:: Monad m => (x -> a -> x) -> x -> (x -> b) -> Consumer (Either e a) m b
-foldRights step begin done = go begin where
-    go x = await >>= either
-        (const $ return $ done x)
-        ((go $!) . step x)
-{-# INLINABLE foldRights #-}
+instance Foldable Terminated where
+
+    foldMap _ (End    ) = mempty
+    foldMap f (Value x) = f x
+
+    foldr _ y (End    ) =     y
+    foldr f y (Value x) = f x y
+
+    length (End    ) = 0
+    length (Value _) = 1
+
+    null (End    ) = True
+    null (Value _) = False
+
+terminated :: b -> (a -> b) -> Terminated a -> b
+terminated e _ (End    ) = e
+terminated _ f (Value v) = f v
+{-# INLINABLE terminated #-}
+
+signalLast :: Monad m => Producer a m r -> Producer (Terminated a) m s
+signalLast p = (p >-> P.map Value) >> forever (yield End)
+
+unsignalLast :: Monad m => Pipe (Terminated a) a m s
+unsignalLast = P.concat
+{-# INLINABLE unsignalLast #-}
+
+foldReturnLast:: Monad m
+    => (x -> a -> x) -> x -> (x -> b)
+    -> Consumer (Terminated a) m b
+foldReturnLast step begin done = loop begin where
+    loop !x = await >>= terminated
+        (pure $ done x)
+        (loop . step x)
+{-# INLINABLE foldReturnLast #-}
 
 type HashFileProgressEvent = ByteCount
 type HashFileProgress = ByteCount
@@ -441,10 +469,9 @@ hashFileX :: MonadSafe m => FilePath -> Producer HashFileProgressEvent m FileHas
 hashFileX path = PS.bracket
     (liftIO $ openFile path S.ReadMode)
     (liftIO . S.hClose) $ \h ->
-        returnDownstream (PB.fromHandle h)
-        >-> P.tee (F.purely foldRights SHA256.foldChunks)
-        >-> P.concat
-        >-> P.map (fromIntegral . B.length)
+        signalLast (PB.fromHandle h)
+        >-> P.tee (F.purely foldReturnLast SHA256.foldChunks)
+        >-> unsignalLast >-> P.map (fromIntegral . B.length)
 
 hashFileY :: MonadSafe m => FilePath -> Producer HashFileProgress m FileHash
 hashFileY = (>-> P.scan (+) 0 id) . hashFileX
