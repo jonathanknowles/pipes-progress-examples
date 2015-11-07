@@ -465,33 +465,39 @@ type HashFileProgress = ByteCount
 openFile :: FilePath -> IOMode -> IO Handle
 openFile = S.openFile . BC.unpack
 
-hashFileX :: MonadSafe m => FilePath -> Producer HashFileProgressEvent m FileHash
+foldReturn :: Monad m => Fold a r -> Producer a m () -> Producer a m r
+foldReturn f p = signalLast p
+    >-> P.tee (F.purely foldReturnLast f)
+    >-> unsignalLast
+
+hashFileX :: MonadSafe m
+    => FilePath
+    -> Producer HashFileProgressEvent m FileHash
 hashFileX path = PS.bracket
     (liftIO $ openFile path S.ReadMode)
     (liftIO . S.hClose) $ \h ->
-        signalLast (PB.fromHandle h)
-        >-> P.tee (F.purely foldReturnLast SHA256.foldChunks)
-        >-> unsignalLast >-> P.map (fromIntegral . B.length)
+        foldReturn SHA256.foldChunks (PB.fromHandle h)
+            >-> P.map (fromIntegral . B.length)
 
-hashFileY :: MonadSafe m => FilePath -> Producer HashFileProgress m FileHash
+hashFileY :: MonadSafe m
+    => FilePath
+    -> Producer HashFileProgress m FileHash
 hashFileY = (>-> P.scan (+) 0 id) . hashFileX
 
 hashFileZ :: FilePath -> IO FileHash
 hashFileZ = PS.runSafeT . drain . hashFileX
 
-hashFileTreeX :: MonadSafe m => FilePath -> Producer HashFileTreeProgressEvent m FileHash
-hashFileTreeX p =
-    signalLast stream
-        >-> P.tee (foldReturnLast step mempty id)
-        >-> unsignalLast
-    where
-        step h = \case
-            HashFileEnd g -> mappend h g
-            _             -> h
-        stream = for (PF.descendantFiles PF.RootToLeaf p) $ \i -> do
-            let q = PF.filePath i
-            yield $ HashFileStart q
-            yield . HashFileEnd =<< hashFileX q >-> P.map HashFileChunk
+hashFileTreeX :: MonadSafe m
+    => FilePath
+    -> Producer HashFileTreeProgressEvent m FileHash
+hashFileTreeX p = foldReturn (F.Fold step mempty id) stream where
+    step h (HashFileEnd g) = mappend h g
+    step h (            _) = h
+    stream = for (PF.descendantFiles PF.RootToLeaf p) $ \i -> do
+        let q = PF.filePath i
+        yield $ HashFileStart q
+        yield . HashFileEnd =<<
+            hashFileX q >-> P.map HashFileChunk
 
 hashFileTreeZ :: FilePath -> IO FileHash
 hashFileTreeZ = PS.runSafeT . drain . hashFileTreeX
