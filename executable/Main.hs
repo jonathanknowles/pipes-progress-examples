@@ -27,10 +27,9 @@ testCountDescendantFiles = do
     Prelude.print count
 
 testNewStyle :: IO ()
-testNewStyle =
-    S.withFile "/public/jsk/scratch/large/1GiB" S.ReadMode $ \i -> do
-        hash <- hashFileZ i
-        Prelude.print hash
+testNewStyle = do
+    hash <- hashFileZ "/public/jsk/scratch/large/1GiB"
+    Prelude.print hash
 
 main :: IO ()
 main = do

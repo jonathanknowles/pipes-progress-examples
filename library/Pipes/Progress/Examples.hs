@@ -18,7 +18,9 @@ import Pipes.Core                      ((<\\), respond)
 import Pipes.FileSystem                (isFile, FileInfo)
 import Pipes.Nested                    (StreamEvent (..))
 import Pipes.Progress                  (Monitor, Period (..))
+import Pipes.Safe                      (MonadSafe, SafeT)
 import Prelude                  hiding (FilePath, readFile)
+import System.IO                       (IOMode, Handle)
 import System.Posix.ByteString         (RawFilePath)
 import Text.Printf                     (printf)
 import Text.Pretty                     (Pretty, pretty)
@@ -432,17 +434,23 @@ foldRights step begin done = go begin where
 type HashFileProgressEvent = ByteCount
 type HashFileProgress = ByteCount
 
-hashFileX :: MonadIO m => S.Handle -> Producer HashFileProgressEvent m FileHash
-hashFileX h = returnDownstream (PB.fromHandle h)
-    >-> P.tee (F.purely foldRights SHA256.foldChunks)
-    >-> P.concat
-    >-> P.map (fromIntegral . B.length)
+openFile :: FilePath -> IOMode -> IO Handle
+openFile = S.openFile . BC.unpack
 
-hashFileY :: MonadIO m => S.Handle -> Producer HashFileProgress m FileHash
+hashFileX :: MonadSafe m => FilePath -> Producer HashFileProgressEvent m FileHash
+hashFileX path = PS.bracket
+    (liftIO $ openFile path S.ReadMode)
+    (liftIO . S.hClose) $ \h ->
+        returnDownstream (PB.fromHandle h)
+        >-> P.tee (F.purely foldRights SHA256.foldChunks)
+        >-> P.concat
+        >-> P.map (fromIntegral . B.length)
+
+hashFileY :: MonadSafe m => FilePath -> Producer HashFileProgress m FileHash
 hashFileY = (>-> P.scan (+) 0 id) . hashFileX
 
-hashFileZ :: S.Handle -> IO FileHash
-hashFileZ = drain . hashFileX
+hashFileZ :: FilePath -> IO FileHash
+hashFileZ = PS.runSafeT . drain . hashFileX
 
 drain :: Monad m => Producer a m r -> m r
 drain = runEffect . (>-> P.drain)
