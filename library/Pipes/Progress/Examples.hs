@@ -18,7 +18,7 @@ import Pipes                           ((>->), (<-<), Consumer, Pipe, Producer, 
 import Pipes.Core                      ((<\\), respond)
 import Pipes.FileSystem                (isFile, FileInfo)
 import Pipes.Nested                    (StreamEvent (..))
-import Pipes.Progress                  (Monitor, Period (..))
+import Pipes.Progress                  (TimePeriod (..), runMonitoredEffect)
 import Pipes.Safe                      (MonadSafe, SafeT)
 import Prelude                  hiding (FilePath, readFile)
 import System.IO                       (IOMode, Handle)
@@ -50,12 +50,12 @@ import qualified System.Posix.Files.ByteString  as S
 type FilePath = RawFilePath
 
 newtype ByteCount = ByteCount W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
-newtype TimeElapsed = TimeElapsed Period deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
-newtype TimeRemaining = TimeRemaining Period deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
+newtype TimeElapsed = TimeElapsed TimePeriod deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
+newtype TimeRemaining = TimeRemaining TimePeriod deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
 newtype TransferRate = TransferRate Double deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
 
-transferRate :: ByteCount -> Period -> TransferRate
-transferRate (ByteCount b) (Period t) = TransferRate $ fromIntegral b / realToFrac t
+transferRate :: ByteCount -> TimePeriod -> TransferRate
+transferRate (ByteCount b) (TimePeriod t) = TransferRate $ fromIntegral b / realToFrac t
 
 initProgress :: ByteCount -> RichFileCopyProgress
 initProgress bytesTarget = RichFileCopyProgress
@@ -164,12 +164,12 @@ progressComplete p = rfcpBytesCopied p == rfcpBytesTarget p
 data RichFileCopyProgress = RichFileCopyProgress
     { rfcpBytesCopied   :: ByteCount
     , rfcpBytesTarget   :: ByteCount
-    , rfcpTimeElapsed   :: Period
-    , rfcpTimeRemaining :: Period   -- this should be Maybe
+    , rfcpTimeElapsed   :: TimePeriod
+    , rfcpTimeRemaining :: TimePeriod   -- this should be Maybe
     , rfcpTransferRate  :: TransferRate -- this should be Maybe
     }
 
-updateProgress :: RichFileCopyProgress -> Period -> ByteCount -> RichFileCopyProgress
+updateProgress :: RichFileCopyProgress -> TimePeriod -> ByteCount -> RichFileCopyProgress
 updateProgress p t b = p
     { rfcpBytesCopied   = nBytesCopied
     , rfcpTimeElapsed   = nTimeElapsed
@@ -182,12 +182,14 @@ updateProgress p t b = p
         nTransferRate  = 0.9 * rfcpTransferRate p
                        + 0.1 * transferRate (b - rfcpBytesCopied p) t
 
+{--
 terminalMonitor :: Pretty a => Monitor a
 terminalMonitor = forever $ do
     update <- await
     liftIO $
         (if PP.isFinal update then T.putStrLn else T.putStr)
         (returnToStart <> pretty (PP.value update))
+--}
 
 returnToStart :: Text
 returnToStart = "\r\ESC[K"
@@ -195,6 +197,7 @@ returnToStart = "\r\ESC[K"
 byteCounter :: F.Fold ByteString ByteCount
 byteCounter = F.Fold step 0 id where step i j = i + chunkLength j
 
+{--
 transferData
     :: Monitor DataTransferProgress
     -> S.Handle
@@ -203,6 +206,7 @@ transferData
 transferData m i o =
     PP.withMonitor (P.map (fmap dataTransferProgress) >-> m) 0 (F.purely P.scan byteCounter) $ \p ->
         runEffect $ PB.fromHandle i >-> p >-> PB.toHandle o
+--}
 
 chunkLength :: ByteString -> ByteCount
 chunkLength = ByteCount . fromIntegral . B.length
@@ -212,7 +216,7 @@ data DataTransferProgress = DataTransferProgress
     deriving Show
 
 dataTransferProgress = DataTransferProgress
-
+{--
 copyFile
     :: Monitor FileCopyProgress
     -> FilePath
@@ -223,7 +227,7 @@ copyFile m s t =
     S.withFile (BC.unpack t) S.WriteMode $ \o ->
     getFileSize s >>= \b ->
         transferData (P.map (fmap $ fileCopyProgress b) >-> m) i o
-
+--}
 data FileCopyProgress = FileCopyProgress
     { fcpBytesCopied    :: ByteCount
     , fcpBytesRemaining :: ByteCount }
@@ -233,7 +237,7 @@ fileCopyProgress :: ByteCount -> DataTransferProgress -> FileCopyProgress
 fileCopyProgress limit p = FileCopyProgress
     { fcpBytesCopied    =         dtpBytesTransferred p
     , fcpBytesRemaining = limit - dtpBytesTransferred p }
-
+{--
 hashFileOld
     :: Monitor FileHashProgress
     -> FilePath
@@ -243,7 +247,7 @@ hashFileOld m f =
     getFileSize f >>= \b ->
     PP.withMonitor (P.map (fmap $ fileHashProgress b) >-> m) 0 (F.purely P.scan byteCounter) $ \p ->
         hashFileChunksP $ PB.fromHandle i >-> p
-
+--}
 data FileHashProgress = FileHashProgress
     { fhpBytesHashed    :: ByteCount
     , fhpBytesRemaining :: ByteCount }
@@ -313,7 +317,7 @@ streamFileTree = PN.flatten . PN.nest (PF.descendantFiles PF.RootToLeaf) readFil
 
 hashFileTree :: FilePath -> IO FileHash
 hashFileTree = PS.runSafeT . hashFileStream . streamFileTree
-
+{--
 hashFileTree'
     :: Monitor FileTreeHashProgress
     -> FilePath
@@ -321,10 +325,10 @@ hashFileTree'
 hashFileTree' m f = PS.runSafeT $
     PP.withMonitor m initialFileTreeHashProgress (F.purely P.scan foldFileTreeHashProgress) $ \p ->
         hashFileStream (streamFileTree f >-> p)
-
+--}
 hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
 hashFileStream = hashFileHashesP . PN.foldStreams SHA256.foldChunks
-
+{--
 calculateDiskUsage'
     :: Monitor FileByteCount
     -> FilePath
@@ -335,7 +339,7 @@ calculateDiskUsage' m f = PS.runSafeT $
             >-> P.mapM (liftIO . getFileSize . PF.filePath)
             >-> F.purely P.scan foldFileByteCount
             >-> p
-
+--}
 calculateDiskUsage
     :: FilePath
     -> IO FileByteCount
