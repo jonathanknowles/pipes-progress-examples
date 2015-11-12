@@ -28,6 +28,7 @@ library
         cryptohash,
         foldl,
         lens-family-core,
+        monad-control,
         mtl,
         pipes,
         pipes-bytestring,
@@ -55,6 +56,8 @@ executable              pipes-progress-examples
         pipes,
         pipes-progress,
         pipes-progress-examples,
+        pipes-safe,
+        transformers,
         unix
     hs-source-dirs:      executable
     default-language:    Haskell2010
@@ -71,6 +74,7 @@ executable              pipes-progress-examples-profiled
         pipes,
         pipes-progress,
         pipes-progress-examples,
+        pipes-safe,
         unix
     hs-source-dirs:      executable
     default-language:    Haskell2010

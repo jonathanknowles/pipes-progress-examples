@@ -5,18 +5,30 @@ module Main where
 import Pipes ((>->))
 import Pipes.Progress
 import Pipes.Progress.Examples
+import Pipes.Safe (runSafeT)
 
+import qualified Pipes.Prelude as P
 import qualified System.IO as S
-
+{-
 testHashFileTree :: IO ()
 testHashFileTree = do
     hash <- hashFileTree' (every 0.5 >-> terminalMonitor) "/public/jsk/scratch"
     Prelude.print hash
+-}
 
 testHashFileTreeExperimental :: IO ()
 testHashFileTreeExperimental = do
-    hash <- hashFileTreeZ "/public/jsk/scratch"
-    Prelude.print hash
+    let monitor = terminalMonitor 4.0
+    --Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/small/" silentMonitor)
+    --Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/small/" (terminalMonitor 1.0))
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch" monitor)
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch" monitor)
 
 testCalculateDiskUsage :: IO ()
 testCalculateDiskUsage = do

@@ -1,15 +1,17 @@
-{-# LANGUAGE BangPatterns               #-}
+{-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE ExistentialQuantification  #-}
 
 module Pipes.Progress.Examples where
 
 import Control.Foldl                   (Fold)
 import Control.Monad                   (forever)
 import Control.Monad.Trans             (MonadIO, liftIO)
+import Control.Monad.Trans.Control     (MonadBaseControl)
 import Crypto.Hash.SHA256.Extra        (SHA256, foldChunks, foldHashes)
 import Data.ByteString                 (ByteString)
 import Data.Monoid                     ((<>))
@@ -18,8 +20,9 @@ import Pipes                           ((>->), (<-<), Consumer, Pipe, Producer, 
 import Pipes.Core                      ((<\\), respond)
 import Pipes.FileSystem                (isFile, FileInfo)
 import Pipes.Nested                    (StreamEvent (..))
-import Pipes.Progress                  (TimePeriod (..), runMonitoredEffect)
+import Pipes.Progress                  (Monitor (..), Signal (..), TimePeriod (..), runMonitoredEffect)
 import Pipes.Safe                      (MonadSafe, SafeT)
+import Pipes.Termination
 import Prelude                  hiding (FilePath, readFile)
 import System.IO                       (IOMode, Handle)
 import System.Posix.ByteString         (RawFilePath)
@@ -123,6 +126,14 @@ instance Pretty FileTreeHashProgress where
             Nothing -> ""
             Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
 
+instance Pretty HashFileTreeProgress where
+    pretty HashFileTreeProgress {..} = T.concat
+        [      "[", "files hashed: ", pretty hftpFilesHashed, "]"
+        , " ", "[", "bytes hashed: ", pretty hftpBytesHashed, "]"
+        , case hftpFileCurrent of
+            Nothing -> ""
+            Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
+
 instance Pretty FilePath where
     pretty = T.decodeUtf8
 
@@ -182,14 +193,15 @@ updateProgress p t b = p
         nTransferRate  = 0.9 * rfcpTransferRate p
                        + 0.1 * transferRate (b - rfcpBytesCopied p) t
 
-{--
-terminalMonitor :: Pretty a => Monitor a
-terminalMonitor = forever $ do
-    update <- await
-    liftIO $
-        (if PP.isFinal update then T.putStrLn else T.putStr)
-        (returnToStart <> pretty (PP.value update))
---}
+silentMonitor :: (MonadSafe m, Pretty a) => Monitor a m
+silentMonitor = Monitor {monitor = forever await, monitorPeriod = 1.0}
+
+terminalMonitor :: (MonadSafe m, Pretty a) =>
+    TimePeriod -> Monitor a m
+terminalMonitor monitorPeriod = Monitor {..} where
+    monitor = forever $ await >>= terminated
+        (liftIO $ T.putStrLn "")
+        (liftIO . T.putStr . (returnToStart <>) . pretty)
 
 returnToStart :: Text
 returnToStart = "\r\ESC[K"
@@ -426,43 +438,6 @@ initialFileByteCount = FileByteCount
 --
 -- perhaps the progress type could be combined with the result type?
 
-data Terminated a = Value !a | End
-
-instance Foldable Terminated where
-
-    foldMap _ (End    ) = mempty
-    foldMap f (Value x) = f x
-
-    foldr _ y (End    ) =     y
-    foldr f y (Value x) = f x y
-
-    length (End    ) = 0
-    length (Value _) = 1
-
-    null (End    ) = True
-    null (Value _) = False
-
-terminated :: b -> (a -> b) -> Terminated a -> b
-terminated e _ (End    ) = e
-terminated _ f (Value v) = f v
-{-# INLINABLE terminated #-}
-
-signalLast :: Monad m => Producer a m r -> Producer (Terminated a) m s
-signalLast p = (p >-> P.map Value) >> forever (yield End)
-
-unsignalLast :: Monad m => Pipe (Terminated a) a m s
-unsignalLast = P.concat
-{-# INLINABLE unsignalLast #-}
-
-foldReturnLast:: Monad m
-    => (x -> a -> x) -> x -> (x -> b)
-    -> Consumer (Terminated a) m b
-foldReturnLast step begin done = loop begin where
-    loop !x = await >>= terminated
-        (pure $ done x)
-        (loop . step x)
-{-# INLINABLE foldReturnLast #-}
-
 type HashFileProgressEvent = ByteCount
 type HashFileProgress = ByteCount
 
@@ -511,6 +486,16 @@ hashFileTreeX p = foldReturn step mempty id stream where
 hashFileTreeZ :: FilePath -> IO FileHash
 hashFileTreeZ = PS.runSafeT . drain . hashFileTreeX
 
+hashFileTreeP :: (MonadBaseControl IO m, MonadSafe m)
+    => FilePath
+    -> Monitor HashFileTreeProgress m
+    -> m FileHash
+hashFileTreeP path =
+    runMonitoredEffect Signal {..}
+    where
+        signalDefault = initialHashFileTreeProgress
+        signal = hashFileTreeX path >-> F.purely P.scan foldHashFileTreeProgress
+
 data HashFileTreeProgressEvent
     = HashFileStart !FilePath
     | HashFileChunk !ByteCount
@@ -520,6 +505,22 @@ data HashFileTreeProgress = HashFileTreeProgress
     { hftpFileCurrent :: Maybe FilePath
     , hftpFilesHashed :: !FileCount
     , hftpBytesHashed :: !ByteCount }
+
+updateHashFileTreeProgress :: HashFileTreeProgress -> HashFileTreeProgressEvent -> HashFileTreeProgress
+updateHashFileTreeProgress p = \case
+    HashFileStart f -> p { hftpFileCurrent = Just f }
+    HashFileChunk c -> p { hftpBytesHashed = hftpBytesHashed p + c }
+    HashFileEnd   h -> p { hftpFileCurrent = Nothing
+                         , hftpFilesHashed = hftpFilesHashed p + 1 }
+
+foldHashFileTreeProgress :: F.Fold HashFileTreeProgressEvent HashFileTreeProgress
+foldHashFileTreeProgress = F.Fold
+    updateHashFileTreeProgress initialHashFileTreeProgress id
+
+initialHashFileTreeProgress = HashFileTreeProgress
+    { hftpFileCurrent = Nothing
+    , hftpFilesHashed = 0
+    , hftpBytesHashed = 0 }
 
 drain :: Monad m => Producer a m r -> m r
 drain = runEffect . (>-> P.drain)
