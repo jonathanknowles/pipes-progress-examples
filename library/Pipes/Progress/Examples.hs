@@ -126,6 +126,10 @@ instance Pretty FileTreeHashProgress where
             Nothing -> ""
             Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
 
+instance Pretty HashFileProgress where
+    pretty HashFileProgress {..} = T.concat
+        [      "[", "bytes hashed: ", pretty hfpBytesHashed, "]"]
+
 instance Pretty HashFileTreeProgress where
     pretty HashFileTreeProgress {..} = T.concat
         [      "[", "files hashed: ", pretty hftpFilesHashed, "]"
@@ -410,7 +414,7 @@ initialFileByteCount = FileByteCount
 --
 -- Then we have:
 --
--- usage <- diskUsage path -> toSignal >-> samplePeriodically 1 >-> toConsole
+-- usage <- diskUsage path >-> toSignal >-> samplePeriodically 1 >-> toConsole
 -- hash <- hashFile path >-> toSignal >-> samplePeriodically 1 >-> toConsole
 -- copyFile p q >-> samplePeriodically 1 >-> toConsole
 
@@ -438,9 +442,6 @@ initialFileByteCount = FileByteCount
 --
 -- perhaps the progress type could be combined with the result type?
 
-type HashFileProgressEvent = ByteCount
-type HashFileProgress = ByteCount
-
 openFile :: FilePath -> IOMode -> IO Handle
 openFile = S.openFile . BC.unpack
 
@@ -454,6 +455,18 @@ foldReturn step begin done p =
     >-> P.tee (foldReturnLast step begin done)
     >-> unsignalLast
 
+drain :: Monad m => Producer a m r -> m r
+drain = runEffect . (>-> P.drain)
+
+---------------------
+-- Hash a single file
+---------------------
+
+type HashFileProgressEvent = ByteCount
+
+data HashFileProgress = HashFileProgress
+    { hfpBytesHashed :: !ByteCount }
+
 hashFileX :: MonadSafe m
     => FilePath
     -> Producer HashFileProgressEvent m FileHash
@@ -463,13 +476,32 @@ hashFileX path = PS.bracket
         F.purely foldReturn SHA256.foldChunks (PB.fromHandle h)
             >-> P.map (fromIntegral . B.length)
 
-hashFileY :: MonadSafe m
-    => FilePath
-    -> Producer HashFileProgress m FileHash
-hashFileY = (>-> P.scan (+) 0 id) . hashFileX
-
 hashFileZ :: FilePath -> IO FileHash
 hashFileZ = PS.runSafeT . drain . hashFileX
+
+hashFileP :: (MonadBaseControl IO m, MonadSafe m)
+    => FilePath
+    -> Monitor HashFileProgress m
+    -> m FileHash
+hashFileP path = runMonitoredEffect Signal {..}
+    where
+        signalDefault = initialHashFileProgress
+        signal = hashFileX path >-> F.purely P.scan foldHashFileProgress
+
+initialHashFileProgress :: HashFileProgress
+initialHashFileProgress = HashFileProgress
+    { hfpBytesHashed = 0 }
+
+foldHashFileProgress :: Fold HashFileProgressEvent HashFileProgress
+foldHashFileProgress = F.Fold
+    updateHashFileProgress initialHashFileProgress id
+
+updateHashFileProgress :: HashFileProgress -> HashFileProgressEvent -> HashFileProgress
+updateHashFileProgress p e = p { hfpBytesHashed = hfpBytesHashed p + e }
+
+-----------------------
+-- Hash a tree of files
+-----------------------
 
 hashFileTreeX :: MonadSafe m
     => FilePath
@@ -490,8 +522,7 @@ hashFileTreeP :: (MonadBaseControl IO m, MonadSafe m)
     => FilePath
     -> Monitor HashFileTreeProgress m
     -> m FileHash
-hashFileTreeP path =
-    runMonitoredEffect Signal {..}
+hashFileTreeP path = runMonitoredEffect Signal {..}
     where
         signalDefault = initialHashFileTreeProgress
         signal = hashFileTreeX path >-> F.purely P.scan foldHashFileTreeProgress
@@ -521,7 +552,4 @@ initialHashFileTreeProgress = HashFileTreeProgress
     { hftpFileCurrent = Nothing
     , hftpFilesHashed = 0
     , hftpBytesHashed = 0 }
-
-drain :: Monad m => Producer a m r -> m r
-drain = runEffect . (>-> P.drain)
 

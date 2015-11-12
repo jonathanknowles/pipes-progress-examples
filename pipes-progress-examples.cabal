@@ -20,6 +20,7 @@ library
         Pipes.Extra
         Pipes.Nested
         Pipes.Progress.Examples
+        Text.Pretty
     -- other-modules:
     -- other-extensions:
     build-depends:

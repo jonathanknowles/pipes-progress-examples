@@ -3,32 +3,32 @@
 module Main where
 
 import Pipes ((>->))
-import Pipes.Progress
+import Pipes.Progress (Monitor)
 import Pipes.Progress.Examples
-import Pipes.Safe (runSafeT)
+import Pipes.Safe (MonadSafe, runSafeT)
+import Text.Pretty (Pretty)
 
 import qualified Pipes.Prelude as P
 import qualified System.IO as S
-{-
+
+monitor :: (MonadSafe m, Pretty a) => Monitor a m
+monitor = terminalMonitor 0.5
+
 testHashFileTree :: IO ()
 testHashFileTree = do
-    hash <- hashFileTree' (every 0.5 >-> terminalMonitor) "/public/jsk/scratch"
-    Prelude.print hash
--}
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/small" monitor)
+    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/large" monitor)
 
-testHashFileTreeExperimental :: IO ()
-testHashFileTreeExperimental = do
-    let monitor = terminalMonitor 4.0
-    --Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/small/" silentMonitor)
-    --Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/small/" (terminalMonitor 1.0))
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch" monitor)
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch" monitor)
+testHashFile :: IO ()
+testHashFile = do
+    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/small/1MiB"   monitor)
+    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/small/4MiB"   monitor)
+    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/small/16MiB"  monitor)
+    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/small/64MiB"  monitor)
+    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/large/256MiB" monitor)
+    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/large/512MiB" monitor)
+    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/large/1GiB" monitor)
 
 testCalculateDiskUsage :: IO ()
 testCalculateDiskUsage = do
@@ -51,4 +51,4 @@ main :: IO ()
 main = do
     S.hSetBuffering S.stdout S.NoBuffering
     --testHashFileTree
-    testHashFileTreeExperimental
+    testHashFile
