@@ -213,17 +213,6 @@ returnToStart = "\r\ESC[K"
 byteCounter :: F.Fold ByteString ByteCount
 byteCounter = F.Fold step 0 id where step i j = i + chunkLength j
 
-{--
-transferData
-    :: Monitor DataTransferProgress
-    -> S.Handle
-    -> S.Handle
-    -> IO ()
-transferData m i o =
-    PP.withMonitor (P.map (fmap dataTransferProgress) >-> m) 0 (F.purely P.scan byteCounter) $ \p ->
-        runEffect $ PB.fromHandle i >-> p >-> PB.toHandle o
---}
-
 chunkLength :: ByteString -> ByteCount
 chunkLength = ByteCount . fromIntegral . B.length
 
@@ -273,8 +262,8 @@ fileHashProgress limit p = FileHashProgress
     { fhpBytesHashed    =         p
     , fhpBytesRemaining = limit - p }
 
-readFile :: PS.MonadSafe m => FileInfo -> Producer FileChunk m ()
-readFile info = PS.withFile (BC.unpack $ PF.filePath info) S.ReadMode PB.fromHandle
+readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
+readFile path = PS.withFile (BC.unpack path) S.ReadMode PB.fromHandle
 
 type FileHash = SHA256
 
@@ -287,16 +276,17 @@ hashFileChunksP = F.purely P.fold SHA256.foldChunks
 hashFileHashesP :: Monad m => Producer FileHash m () -> m FileHash
 hashFileHashesP = F.purely P.fold SHA256.foldHashes
 
-hashFilesSimple :: (PS.MonadSafe m, MonadIO m) => Pipe FileInfo FileHash m ()
+hashFilesSimple :: (PS.MonadSafe m, MonadIO m) => Pipe FilePath FileHash m ()
 hashFilesSimple = P.sequence <-< P.map (PS.runSafeT . hashFileChunksP . readFile)
 
 hashFileTreeSimple :: FilePath -> IO FileHash
 hashFileTreeSimple path = PS.runSafeT $ hashFileHashesP $
     hashFilesSimple <-< PF.descendantFiles PF.RootToLeaf path
 
-type FileCount = W.Word64
-type FileIndex = W.Word64
-type FileChunk = ByteString
+type DirectoryCount = W.Word64
+type FileCount      = W.Word64
+type FileIndex      = W.Word64
+type FileChunk      = ByteString
 
 -- progress: [  0 %] [   0/1024 files] [   0  B/50.0 GB] [waiting]
 -- progress: [ 10 %] [ 128/1024 files] [  50 MB/50.0 GB] [hashing "../some/very/big/file"]
@@ -311,7 +301,7 @@ data FileTreeHashProgress = FileTreeHashProgress
 
 updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
 updateFileTreeHashProgress p = \case
-    StreamStart f -> p { fthpFileCurrent = Just (PF.filePath f) }
+    StreamStart f -> p { fthpFileCurrent = Just f }
     StreamChunk c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
     StreamEnd   f -> p { fthpFileCurrent = Nothing
                        , fthpFilesHashed = fthpFilesHashed p + 1 }
@@ -326,7 +316,7 @@ foldFileTreeHashProgress :: F.Fold FileStreamEvent FileTreeHashProgress
 foldFileTreeHashProgress = F.Fold
     updateFileTreeHashProgress initialFileTreeHashProgress id
 
-type FileStreamEvent = StreamEvent FileInfo FileChunk
+type FileStreamEvent = StreamEvent FilePath FileChunk
 
 streamFileTree :: PS.MonadSafe m => FilePath -> Producer FileStreamEvent m ()
 streamFileTree = PN.flatten . PN.nest (PF.descendantFiles PF.RootToLeaf) readFile
@@ -345,24 +335,24 @@ hashFileTree' m f = PS.runSafeT $
 hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
 hashFileStream = hashFileHashesP . PN.foldStreams SHA256.foldChunks
 {--
-calculateDiskUsage'
+calculateDiskUsageOld'
     :: Monitor FileByteCount
     -> FilePath
     -> IO (Maybe FileByteCount)
-calculateDiskUsage' m f = PS.runSafeT $
+calculateDiskUsageOld' m f = PS.runSafeT $
     PP.withMonitor m initialFileByteCount P.cat $ \p ->
         P.last $ PF.descendantFiles PF.RootToLeaf f
             >-> P.mapM (liftIO . getFileSize . PF.filePath)
             >-> F.purely P.scan foldFileByteCount
             >-> p
 --}
-calculateDiskUsage
+calculateDiskUsageOld
     :: FilePath
     -> IO FileByteCount
-calculateDiskUsage f = PS.runSafeT $
+calculateDiskUsageOld f = PS.runSafeT $
     F.purely P.fold foldFileByteCount $
         PF.descendantFiles PF.RootToLeaf f
-            >-> P.mapM (liftIO . getFileSize . PF.filePath)
+            >-> P.mapM (liftIO . getFileSize)
 
 countDescendantFiles
     :: FilePath
@@ -445,22 +435,39 @@ initialFileByteCount = FileByteCount
 openFile :: FilePath -> IOMode -> IO Handle
 openFile = S.openFile . BC.unpack
 
--- Consider giving this the usual interface.
-foldReturn :: Monad m
-    => (x -> a -> x) -> x -> (x -> b)
-    -> Producer a m r
-    -> Producer a m b
-foldReturn step begin done p =
-    signalLast p
-    >-> P.tee (foldReturnLast step begin done)
-    >-> unsignalLast
-
 drain :: Monad m => Producer a m r -> m r
 drain = runEffect . (>-> P.drain)
+
+-------------------------------------------------------------------
+-- Calculate the number of files and bytes within a given directory
+-------------------------------------------------------------------
+
+data DirectoryFileByteCount = DirectoryFileByteCount
+    { dfbcFiles       :: {-# UNPACK #-} !FileCount
+    , dfbcBytes       :: {-# UNPACK #-} !ByteCount
+    , dfbcDirectories :: {-# UNPACK #-} !DirectoryCount } deriving Show
+
+initialDirectoryFileByteCount :: DirectoryFileByteCount
+initialDirectoryFileByteCount = DirectoryFileByteCount 0 0 0
+{-
+updateDirectoryFileByteCount :: DirectoryFileByteCount -> FileInfo -> DirectoryFileByteCount
+updateDirectoryFileByteCount c i =
+    case fileType i of
+        File -> c { dfbcFiles = dfbcFiles c + 1
+                  , dfbcBytes = dfbcBytes
+-}
+calculateDiskUsageY :: MonadSafe m
+    => FilePath
+    -> Producer DirectoryFileByteCount m DirectoryFileByteCount
+calculateDiskUsageY path = undefined -- returnLast (PF.descendants PF.RootToLeaf path)
+
+
 
 ---------------------
 -- Hash a single file
 ---------------------
+
+-- TODO bytes remaining
 
 type HashFileProgressEvent = ByteCount
 
@@ -489,8 +496,7 @@ hashFileP path = runMonitoredEffect Signal {..}
         signal = hashFileX path >-> F.purely P.scan foldHashFileProgress
 
 initialHashFileProgress :: HashFileProgress
-initialHashFileProgress = HashFileProgress
-    { hfpBytesHashed = 0 }
+initialHashFileProgress = HashFileProgress 0
 
 foldHashFileProgress :: Fold HashFileProgressEvent HashFileProgress
 foldHashFileProgress = F.Fold
@@ -509,11 +515,10 @@ hashFileTreeX :: MonadSafe m
 hashFileTreeX p = foldReturn step mempty id stream where
     step h (HashFileEnd g) = mappend h g
     step h (            _) = h
-    stream = for (PF.descendantFiles PF.RootToLeaf p) $ \i -> do
-        let q = PF.filePath i
-        yield $ HashFileStart q
+    stream = for (PF.descendantFiles PF.RootToLeaf p) $ \p -> do
+        yield $ HashFileStart p
         yield . HashFileEnd =<<
-            hashFileX q >-> P.map HashFileChunk
+            hashFileX p >-> P.map HashFileChunk
 
 hashFileTreeZ :: FilePath -> IO FileHash
 hashFileTreeZ = PS.runSafeT . drain . hashFileTreeX
