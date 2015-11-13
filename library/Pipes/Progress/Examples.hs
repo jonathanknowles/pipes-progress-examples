@@ -8,7 +8,7 @@
 
 module Pipes.Progress.Examples where
 
-import Control.Foldl                   (Fold)
+import Control.Foldl                   (Fold (..), FoldM (..))
 import Control.Monad                   (forever)
 import Control.Monad.Trans             (MonadIO, liftIO)
 import Control.Monad.Trans.Control     (MonadBaseControl)
@@ -76,15 +76,19 @@ instance (Real a, Show a) => Pretty (Percent a) where
             ((100.0 * realToFrac a)
                     / realToFrac b)) <> "%"
 
+prettyInteger :: (Num a, Ord a, Show a) => a -> Text
+prettyInteger a =
+    if a < 0
+    then "-" <> prettyInteger (-a)
+    else T.reverse
+       $ T.intercalate ","
+       $ T.chunksOf 3
+       $ T.reverse
+       $ T.pack
+       $ show a
+
 instance Pretty Integer where
-    pretty a = if a < 0
-               then "-" <> pretty (-a)
-               else T.reverse
-                  $ T.intercalate ","
-                  $ T.chunksOf 3
-                  $ T.reverse
-                  $ T.pack
-                  $ show a
+    pretty = prettyInteger
 
 instance Pretty (ByteCount, ByteCount) where
     pretty (ByteCount a, ByteCount b) =
@@ -93,7 +97,7 @@ instance Pretty (ByteCount, ByteCount) where
 
 instance Pretty ByteCount where
     pretty (ByteCount a) =
-        pretty a <> " " <>
+        prettyInteger a <> " " <>
             if a == 1 || a == -1
                 then "byte"
                 else "bytes"
@@ -112,6 +116,15 @@ instance Pretty FileCopyProgress where
     pretty FileCopyProgress {..} = T.concat
         [      "[",   "copied: ", pretty fcpBytesCopied   , "]"
         , " ", "[","remaining: ", pretty fcpBytesRemaining, "]" ]
+
+instance Pretty DirectoryCount where
+    pretty (DirectoryCount c) = pretty c
+
+instance Pretty DirectoryFileByteCount where
+    pretty DirectoryFileByteCount {..} = T.concat
+        [      "[","directories: ", pretty dfbcDirectories, "]"
+        , " ", "[",      "files: ", pretty dfbcFiles      , "]"
+        , " ", "[",      "bytes: ", pretty dfbcBytes      , "]" ]
 
 instance Pretty FileHashProgress where
     pretty FileHashProgress {..} = T.concat
@@ -140,6 +153,9 @@ instance Pretty HashFileTreeProgress where
 
 instance Pretty FilePath where
     pretty = T.decodeUtf8
+
+instance Pretty FileCount where
+    pretty (FileCount c) = pretty c
 
 instance Pretty FileByteCount where
     pretty FileByteCount {..} = T.concat
@@ -283,9 +299,10 @@ hashFileTreeSimple :: FilePath -> IO FileHash
 hashFileTreeSimple path = PS.runSafeT $ hashFileHashesP $
     hashFilesSimple <-< PF.descendantFiles PF.RootToLeaf path
 
-type DirectoryCount = W.Word64
-type FileCount      = W.Word64
-type FileIndex      = W.Word64
+newtype DirectoryCount = DirectoryCount W.Word64 deriving (Num, Show)
+newtype FileCount      = FileCount      W.Word64 deriving (Num, Show)
+newtype FileIndex      = FileIndex      W.Word64 deriving (Num, Show)
+
 type FileChunk      = ByteString
 
 -- progress: [  0 %] [   0/1024 files] [   0  B/50.0 GB] [waiting]
@@ -438,30 +455,59 @@ openFile = S.openFile . BC.unpack
 drain :: Monad m => Producer a m r -> m r
 drain = runEffect . (>-> P.drain)
 
--------------------------------------------------------------------
--- Calculate the number of files and bytes within a given directory
--------------------------------------------------------------------
+mfold :: Monoid a => Fold a a
+mfold = Fold mappend mempty id
+
+mscan :: (Monad m, Monoid a) => Pipe a a m r
+mscan = F.purely P.scan mfold
+
+---------------------------------------------------------------------------------------------
+-- Recursively calculate the numbers of directories, files and bytes within a given directory
+---------------------------------------------------------------------------------------------
+
+-- TODO: Compare speed with tuple.
 
 data DirectoryFileByteCount = DirectoryFileByteCount
-    { dfbcFiles       :: {-# UNPACK #-} !FileCount
-    , dfbcBytes       :: {-# UNPACK #-} !ByteCount
-    , dfbcDirectories :: {-# UNPACK #-} !DirectoryCount } deriving Show
+    { dfbcDirectories :: {-# UNPACK #-} !DirectoryCount
+    , dfbcFiles       :: {-# UNPACK #-} !FileCount
+    , dfbcBytes       :: {-# UNPACK #-} !ByteCount }
 
-initialDirectoryFileByteCount :: DirectoryFileByteCount
-initialDirectoryFileByteCount = DirectoryFileByteCount 0 0 0
-{-
-updateDirectoryFileByteCount :: DirectoryFileByteCount -> FileInfo -> DirectoryFileByteCount
-updateDirectoryFileByteCount c i =
-    case fileType i of
-        File -> c { dfbcFiles = dfbcFiles c + 1
-                  , dfbcBytes = dfbcBytes
--}
+instance Monoid DirectoryFileByteCount where
+    mempty = DirectoryFileByteCount 0 0 0
+    mappend (DirectoryFileByteCount d1 f1 b1)
+            (DirectoryFileByteCount d2 f2 b2)
+        = DirectoryFileByteCount (d1 + d2) (f1 + f2) (b1 + b2)
+
+directoryFileByteCount :: MonadIO m => FileInfo -> m DirectoryFileByteCount
+directoryFileByteCount info = case PF.fileType info of
+    PF.File   -> do s <- liftIO $ getFileSize $ PF.filePath info
+                    pure $ z { dfbcBytes       = s
+                             , dfbcFiles       = 1 }
+    PF.Directory -> pure $ z { dfbcDirectories = 1 }
+    _            -> pure   z
+    where z = mempty
+
 calculateDiskUsageY :: MonadSafe m
+    => FilePath -> Producer DirectoryFileByteCount m DirectoryFileByteCount
+calculateDiskUsageY path = returnLastProduced mempty
+    (PF.descendants PF.RootToLeaf path
+        >-> P.mapM directoryFileByteCount
+        >-> mscan)
+
+calculateDiskUsageP :: (MonadBaseControl IO m, MonadSafe m)
     => FilePath
-    -> Producer DirectoryFileByteCount m DirectoryFileByteCount
-calculateDiskUsageY path = undefined -- returnLast (PF.descendants PF.RootToLeaf path)
+    -> Monitor DirectoryFileByteCount m
+    -> m DirectoryFileByteCount
+calculateDiskUsageP path = runMonitoredEffect Signal {..}
+    where
+        signalDefault = mempty
+        signal = calculateDiskUsageY path
 
-
+calculateDiskUsageIO
+    :: FilePath
+    -> Monitor DirectoryFileByteCount (SafeT IO)
+    -> IO DirectoryFileByteCount
+calculateDiskUsageIO path monitor = PS.runSafeT $ calculateDiskUsageP path monitor
 
 ---------------------
 -- Hash a single file
