@@ -455,11 +455,8 @@ openFile = S.openFile . BC.unpack
 drain :: Monad m => Producer a m r -> m r
 drain = runEffect . (>-> P.drain)
 
-mfold :: Monoid a => Fold a a
-mfold = Fold mappend mempty id
-
 mscan :: (Monad m, Monoid a) => Pipe a a m r
-mscan = F.purely P.scan mfold
+mscan = F.purely P.scan F.mconcat
 
 ---------------------------------------------------------------------------------------------
 -- Recursively calculate the numbers of directories, files and bytes within a given directory
