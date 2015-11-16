@@ -20,6 +20,7 @@ library
         Pipes.Extra
         Pipes.Nested
         Pipes.Progress.Examples
+        System.Posix.Files.ByteString.Extra
         Text.Pretty
     -- other-modules:
     -- other-extensions:

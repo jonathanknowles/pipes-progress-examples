@@ -29,28 +29,29 @@ import System.Posix.ByteString         (RawFilePath)
 import Text.Printf                     (printf)
 import Text.Pretty                     (Pretty, pretty)
 
-import qualified Control.Foldl                  as F
-import qualified Crypto.Hash.SHA256             as SHA256
-import qualified Crypto.Hash.SHA256.Extra       as SHA256
-import qualified Data.ByteString                as B
-import qualified Data.ByteString.Char8          as BC
-import qualified Data.Text                      as T
-import qualified Data.Text.Encoding             as T
-import qualified Data.Text.IO                   as T
-import qualified Data.Time.Human                as H
-import qualified Data.Word                      as W
-import qualified Pipes                          as P
-import qualified Pipes.ByteString               as PB
-import qualified Pipes.Extra                    as P
-import qualified Pipes.FileSystem               as PF
-import qualified Pipes.Nested                   as PN
-import qualified Pipes.Prelude                  as P
-import qualified Pipes.Progress                 as PP
-import qualified Pipes.Safe                     as PS
-import qualified Pipes.Safe.Prelude             as PS
-import qualified System.IO                      as S
-import qualified System.Posix.Files.ByteString  as S
-import qualified Text.Pretty                    as TP
+import qualified Control.Foldl                       as F
+import qualified Crypto.Hash.SHA256                  as SHA256
+import qualified Crypto.Hash.SHA256.Extra            as SHA256
+import qualified Data.ByteString                     as B
+import qualified Data.ByteString.Char8               as BC
+import qualified Data.Text                           as T
+import qualified Data.Text.Encoding                  as T
+import qualified Data.Text.IO                        as T
+import qualified Data.Time.Human                     as H
+import qualified Data.Word                           as W
+import qualified Pipes                               as P
+import qualified Pipes.ByteString                    as PB
+import qualified Pipes.Extra                         as P
+import qualified Pipes.FileSystem                    as PF
+import qualified Pipes.Nested                        as PN
+import qualified Pipes.Prelude                       as P
+import qualified Pipes.Progress                      as PP
+import qualified Pipes.Safe                          as PS
+import qualified Pipes.Safe.Prelude                  as PS
+import qualified System.IO                           as S
+import qualified System.Posix.Files.ByteString       as S
+import qualified System.Posix.Files.ByteString.Extra as S
+import qualified Text.Pretty                         as TP
 
 type FileChunk = ByteString
 type FileHash  = SHA256
@@ -159,9 +160,6 @@ instance Pretty a => Pretty (Maybe a) where
 
 instance Pretty W.Word64 where
     pretty = T.pack . show
-
-getFileSize :: FilePath -> IO ByteCount
-getFileSize = fmap (fromIntegral . S.fileSize) . S.getFileStatus
 
 progressComplete :: RichFileCopyProgress -> Bool
 progressComplete p = rfcpBytesCopied p == rfcpBytesTarget p
@@ -295,7 +293,7 @@ instance Monoid DirectoryFileByteCount where
 
 directoryFileByteCount :: MonadIO m => FileInfo -> m DirectoryFileByteCount
 directoryFileByteCount info = case PF.fileType info of
-    PF.File   -> do s <- liftIO $ getFileSize $ PF.filePath info
+    PF.File   -> do s <- liftIO $ S.getFileSize $ PF.filePath info
                     pure $ z { dfbcBytes       = s
                              , dfbcFiles       = 1 }
     PF.Directory -> pure $ z { dfbcDirectories = 1 }
@@ -359,7 +357,7 @@ hashFileP :: (MonadBaseControl IO m, MonadSafe m)
     -> Monitor HashFileProgress m
     -> m FileHash
 hashFileP path monitor = do
-    size <- liftIO $ getFileSize path
+    size <- liftIO $ S.getFileSize path
     let signal = hashFileX path >-> F.purely P.scan (foldHashFileProgress size)
     let signalDefault = initialHashFileProgress size
     runMonitoredEffect Signal {..} monitor
