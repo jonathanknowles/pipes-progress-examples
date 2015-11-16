@@ -226,35 +226,10 @@ fileCopyProgress limit p = FileCopyProgress
     { fcpBytesCopied    =         dtpBytesTransferred p
     , fcpBytesRemaining = limit - dtpBytesTransferred p }
 
-data FileHashProgress = FileHashProgress
-    { fhpBytesHashed    :: ByteCount
-    , fhpBytesRemaining :: ByteCount }
-
-fileHashProgress :: ByteCount -> ByteCount -> FileHashProgress
-fileHashProgress limit p = FileHashProgress
-    { fhpBytesHashed    =         p
-    , fhpBytesRemaining = limit - p }
-
 readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
 readFile path = PS.withFile (BC.unpack path) S.ReadMode PB.fromHandle
 
 type FileHash = SHA256
-
-hashFiles :: Monad m => Producer (FilePath, Producer FileChunk m ()) m () -> m FileHash
-hashFiles fs = hashFileHashesP $ P.sequence <-< P.map hashFileChunksP <-< P.map snd <-< fs
-
-hashFileChunksP :: Monad m => Producer FileChunk m () -> m FileHash
-hashFileChunksP = F.purely P.fold SHA256.foldChunks
-
-hashFileHashesP :: Monad m => Producer FileHash m () -> m FileHash
-hashFileHashesP = F.purely P.fold SHA256.foldHashes
-
-hashFilesSimple :: (PS.MonadSafe m, MonadIO m) => Pipe FilePath FileHash m ()
-hashFilesSimple = P.sequence <-< P.map (PS.runSafeT . hashFileChunksP . readFile)
-
-hashFileTreeSimple :: FilePath -> IO FileHash
-hashFileTreeSimple path = PS.runSafeT $ hashFileHashesP $
-    hashFilesSimple <-< PF.descendantFiles PF.RootToLeaf path
 
 newtype DirectoryCount = DirectoryCount W.Word64 deriving (Num, Show)
 newtype FileCount      = FileCount      W.Word64 deriving (Num, Show)
@@ -267,46 +242,6 @@ type FileChunk      = ByteString
 -- progress: [ 50 %] [ 256/1024 files] [25.0 GB/50.0 GB] [hashing "../another/very/big/file"]
 -- progress: [ 90 %] [ 512/1024 files] [45.0 GB/50.0 GB] [hashing "../a/tiny/file"]
 -- progress: [100 %] [1024/1024 files] [50.0 GB/50.0 GB] [hashing complete]
-
-data FileTreeHashProgress = FileTreeHashProgress
-    { fthpBytesHashed :: ByteCount
-    , fthpFilesHashed :: FileCount
-    , fthpFileCurrent :: Maybe FilePath }
-
-updateFileTreeHashProgress :: FileTreeHashProgress -> FileStreamEvent -> FileTreeHashProgress
-updateFileTreeHashProgress p = \case
-    StreamStart f -> p { fthpFileCurrent = Just f }
-    StreamChunk c -> p { fthpBytesHashed = fthpBytesHashed p + fromIntegral (B.length c) }
-    StreamEnd   f -> p { fthpFileCurrent = Nothing
-                       , fthpFilesHashed = fthpFilesHashed p + 1 }
-
-initialFileTreeHashProgress :: FileTreeHashProgress
-initialFileTreeHashProgress = FileTreeHashProgress
-    { fthpFileCurrent = Nothing
-    , fthpFilesHashed = 0
-    , fthpBytesHashed = 0 }
-
-foldFileTreeHashProgress :: F.Fold FileStreamEvent FileTreeHashProgress
-foldFileTreeHashProgress = F.Fold
-    updateFileTreeHashProgress initialFileTreeHashProgress id
-
-type FileStreamEvent = StreamEvent FilePath FileChunk
-
-streamFileTree :: PS.MonadSafe m => FilePath -> Producer FileStreamEvent m ()
-streamFileTree = PN.flatten . PN.nest (PF.descendantFiles PF.RootToLeaf) readFile
-
-hashFileTree :: FilePath -> IO FileHash
-hashFileTree = PS.runSafeT . hashFileStream . streamFileTree
-
-hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
-hashFileStream = hashFileHashesP . PN.foldStreams SHA256.foldChunks
-
-countDescendantFiles
-    :: FilePath
-    -> IO Int
-countDescendantFiles f = PS.runSafeT $
-    P.length $
-        PF.descendantFiles PF.RootToLeaf f
 
 -- Experimental code below.
 

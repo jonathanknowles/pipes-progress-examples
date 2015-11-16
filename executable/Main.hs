@@ -40,12 +40,6 @@ testCalculateDiskUsage = do
     _ <- calculateDiskUsageDrain "/public"
     return ()
 
-testCountDescendantFiles :: IO ()
-testCountDescendantFiles = do
-    --count <- countDescendantFiles' (every 0.5 >-> terminalMonitor) "/public/jsk"
-    count <- countDescendantFiles "/public/jsk"
-    Prelude.print count
-
 testNewStyle :: IO ()
 testNewStyle = do
     hash <- hashFileZ "/public/jsk/scratch/large/1GiB"
