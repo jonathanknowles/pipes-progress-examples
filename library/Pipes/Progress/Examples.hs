@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -42,6 +41,7 @@ import qualified Data.Time.Human                as H
 import qualified Data.Word                      as W
 import qualified Pipes                          as P
 import qualified Pipes.ByteString               as PB
+import qualified Pipes.Extra                    as P
 import qualified Pipes.FileSystem               as PF
 import qualified Pipes.Nested                   as PN
 import qualified Pipes.Prelude                  as P
@@ -361,25 +361,9 @@ countDescendantFiles f = PS.runSafeT $
 openFile :: FilePath -> IOMode -> IO Handle
 openFile = S.openFile . BC.unpack
 
-drain :: Monad m => Producer a m r -> m r
-drain = runEffect . (>-> P.drain)
-
-mscan :: (Monad m, Monoid a) => Pipe a a m r
-mscan = F.purely P.scan F.mconcat
-
-mscan' :: (Monad m, Monoid a) => Pipe a a m r
-mscan' = loop mempty where
-    loop !a = yield a >> await >>= loop . (a <>)
-{-# INLINE mscan' #-}
-
-mfold :: (Monad m, Monoid a) => Producer a m () -> m a
-mfold = F.purely P.fold F.mconcat
-
 ---------------------------------------------------------------------------------------------
 -- Recursively calculate the numbers of directories, files and bytes within a given directory
 ---------------------------------------------------------------------------------------------
-
--- TODO: Compare speed with tuple.
 
 data DirectoryFileByteCount = DirectoryFileByteCount
     { dfbcDirectories :: {-# UNPACK #-} !DirectoryCount
@@ -405,16 +389,16 @@ descendantCounts :: MonadSafe m => FilePath -> Producer DirectoryFileByteCount m
 descendantCounts path = PF.descendants PF.RootToLeaf path >-> P.mapM directoryFileByteCount
 
 calculateDiskUsageDrain :: FilePath -> IO DirectoryFileByteCount
-calculateDiskUsageDrain = PS.runSafeT . drain . calculateDiskUsageY
+calculateDiskUsageDrain = PS.runSafeT . P.drainProducer . calculateDiskUsageY
 
 calculateDiskUsageY :: MonadSafe m
     => FilePath -> Producer DirectoryFileByteCount m DirectoryFileByteCount
-calculateDiskUsageY path = returnLastProduced mempty (descendantCounts path >-> mscan)
+calculateDiskUsageY path = returnLastProduced mempty (descendantCounts path >-> P.mscan)
 
 calculateDiskUsageDirectly
     :: FilePath
     -> IO DirectoryFileByteCount
-calculateDiskUsageDirectly path = PS.runSafeT $ mfold (descendantCounts path)
+calculateDiskUsageDirectly path = PS.runSafeT $ P.mfold (descendantCounts path)
 
 calculateDiskUsageP :: (MonadBaseControl IO m, MonadSafe m)
     => FilePath
@@ -451,7 +435,7 @@ hashFileX path = PS.bracket
             >-> P.map (fromIntegral . B.length)
 
 hashFileZ :: FilePath -> IO FileHash
-hashFileZ = PS.runSafeT . drain . hashFileX
+hashFileZ = PS.runSafeT . P.drainProducer . hashFileX
 
 hashFileP :: (MonadBaseControl IO m, MonadSafe m)
     => FilePath
@@ -491,7 +475,7 @@ hashFileTreeX p = foldReturn step mempty id stream where
             hashFileX p >-> P.map HashFileChunk
 
 hashFileTreeZ :: FilePath -> IO FileHash
-hashFileTreeZ = PS.runSafeT . drain . hashFileTreeX
+hashFileTreeZ = PS.runSafeT . P.drainProducer . hashFileTreeX
 
 hashFileTreeP :: (MonadBaseControl IO m, MonadSafe m)
     => FilePath
