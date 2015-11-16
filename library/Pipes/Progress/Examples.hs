@@ -51,11 +51,19 @@ import qualified Pipes.Safe.Prelude             as PS
 import qualified System.IO                      as S
 import qualified System.Posix.Files.ByteString  as S
 
-type FilePath = RawFilePath
+type FileChunk = ByteString
+type FileHash  = SHA256
+type FilePath  = RawFilePath
 
-newtype ByteCount = ByteCount W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
-newtype TimeElapsed = TimeElapsed TimePeriod deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
+newtype DirectoryCount = DirectoryCount W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
+newtype FileCount      = FileCount      W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
+newtype ByteCount      = ByteCount      W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
+
+newtype TimeElapsed   = TimeElapsed   TimePeriod deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
 newtype TimeRemaining = TimeRemaining TimePeriod deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
+
+data Percent a = Percent a a
+
 newtype TransferRate = TransferRate Double deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
 
 transferRate :: ByteCount -> TimePeriod -> TransferRate
@@ -68,8 +76,6 @@ initProgress bytesTarget = RichFileCopyProgress
     , rfcpTimeElapsed   = 0
     , rfcpTimeRemaining = 0
     , rfcpTransferRate  = 0 }
-
-data Percent a = Percent a a
 
 instance (Real a, Show a) => Pretty (Percent a) where
     pretty (Percent a b) = T.pack
@@ -228,14 +234,6 @@ fileCopyProgress limit p = FileCopyProgress
 
 readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
 readFile path = PS.withFile (BC.unpack path) S.ReadMode PB.fromHandle
-
-type FileHash = SHA256
-
-newtype DirectoryCount = DirectoryCount W.Word64 deriving (Num, Show)
-newtype FileCount      = FileCount      W.Word64 deriving (Num, Show)
-newtype FileIndex      = FileIndex      W.Word64 deriving (Num, Show)
-
-type FileChunk      = ByteString
 
 -- progress: [  0 %] [   0/1024 files] [   0  B/50.0 GB] [waiting]
 -- progress: [ 10 %] [ 128/1024 files] [  50 MB/50.0 GB] [hashing "../some/very/big/file"]
