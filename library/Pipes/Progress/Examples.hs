@@ -126,11 +126,6 @@ instance Pretty DirectoryFileByteCount where
         , " ", "[",      "files: ", pretty dfbcFiles      , "]"
         , " ", "[",      "bytes: ", pretty dfbcBytes      , "]" ]
 
-instance Pretty FileHashProgress where
-    pretty FileHashProgress {..} = T.concat
-        [      "[",    "hashed: ", pretty fhpBytesHashed   , "]"
-        , " ", "[", "remaining: ", pretty fhpBytesRemaining, "]" ]
-
 instance Pretty FileTreeHashProgress where
     pretty FileTreeHashProgress {..} = T.concat
         [      "[", "files hashed: ", pretty fthpFilesHashed, "]"
