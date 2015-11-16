@@ -50,6 +50,7 @@ testNewStyle = do
 main :: IO ()
 main = do
     S.hSetBuffering S.stdout S.NoBuffering
-    testCalculateDiskUsage
+    testHashFile
+    --testCalculateDiskUsage
     --testHashFile
     --testHashFileTree

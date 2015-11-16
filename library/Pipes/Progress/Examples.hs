@@ -141,7 +141,8 @@ instance Pretty FileTreeHashProgress where
 
 instance Pretty HashFileProgress where
     pretty HashFileProgress {..} = T.concat
-        [      "[", "bytes hashed: ", pretty hfpBytesHashed, "]"]
+        [      "[",    "hashed: ", pretty hfpBytesHashed   , "]"
+        , " ", "[", "remaining: ", pretty hfpBytesRemaining, "]" ]
 
 instance Pretty HashFileTreeProgress where
     pretty HashFileTreeProgress {..} = T.concat
@@ -510,12 +511,12 @@ calculateDiskUsageIO path monitor = PS.runSafeT $ calculateDiskUsageP path monit
 -- Hash a single file
 ---------------------
 
--- TODO bytes remaining
-
 type HashFileProgressEvent = ByteCount
 
 data HashFileProgress = HashFileProgress
-    { hfpBytesHashed    ::  {-# UNPACK #-} !ByteCount }
+    { hfpBytesHashed    :: {-# UNPACK #-} !ByteCount
+    , hfpBytesRemaining :: {-# UNPACK #-} !ByteCount }
+
 hashFileX :: MonadSafe m
     => FilePath
     -> Producer HashFileProgressEvent m FileHash
@@ -532,20 +533,23 @@ hashFileP :: (MonadBaseControl IO m, MonadSafe m)
     => FilePath
     -> Monitor HashFileProgress m
     -> m FileHash
-hashFileP path = runMonitoredEffect Signal {..}
-    where
-        signalDefault = initialHashFileProgress
-        signal = hashFileX path >-> F.purely P.scan foldHashFileProgress
+hashFileP path monitor = do
+    size <- liftIO $ getFileSize path
+    let signal = hashFileX path >-> F.purely P.scan (foldHashFileProgress size)
+    let signalDefault = initialHashFileProgress size
+    runMonitoredEffect Signal {..} monitor
 
-initialHashFileProgress :: HashFileProgress
+initialHashFileProgress :: ByteCount -> HashFileProgress
 initialHashFileProgress = HashFileProgress 0
 
-foldHashFileProgress :: Fold HashFileProgressEvent HashFileProgress
-foldHashFileProgress = F.Fold
-    updateHashFileProgress initialHashFileProgress id
+foldHashFileProgress :: ByteCount -> Fold HashFileProgressEvent HashFileProgress
+foldHashFileProgress size = F.Fold
+    updateHashFileProgress (initialHashFileProgress size) id
 
 updateHashFileProgress :: HashFileProgress -> HashFileProgressEvent -> HashFileProgress
-updateHashFileProgress p e = p { hfpBytesHashed = hfpBytesHashed p + e }
+updateHashFileProgress p e = p
+    { hfpBytesHashed    = hfpBytesHashed    p + e
+    , hfpBytesRemaining = hfpBytesRemaining p - e }
 
 -----------------------
 -- Hash a tree of files
