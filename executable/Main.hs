@@ -33,7 +33,7 @@ testHashFile = do
 testCalculateDiskUsage :: IO ()
 testCalculateDiskUsage = do
     --count <- calculateDiskUsage' (every 0.5 >-> terminalMonitor) "/public/jsk"
-    _ <- calculateDiskUsageIO "/public/jsk" monitor
+    _ <- calculateDiskUsageIO "/home" monitor
     return ()
 
 testCountDescendantFiles :: IO ()

@@ -515,8 +515,7 @@ calculateDiskUsageIO path monitor = PS.runSafeT $ calculateDiskUsageP path monit
 type HashFileProgressEvent = ByteCount
 
 data HashFileProgress = HashFileProgress
-    { hfpBytesHashed :: !ByteCount }
-
+    { hfpBytesHashed    ::  {-# UNPACK #-} !ByteCount }
 hashFileX :: MonadSafe m
     => FilePath
     -> Producer HashFileProgressEvent m FileHash
@@ -576,9 +575,9 @@ hashFileTreeP path = runMonitoredEffect Signal {..}
         signal = hashFileTreeX path >-> F.purely P.scan foldHashFileTreeProgress
 
 data HashFileTreeProgressEvent
-    = HashFileStart !FilePath
-    | HashFileChunk !ByteCount
-    | HashFileEnd   !FileHash
+    = HashFileStart  {-# UNPACK #-} !FilePath
+    | HashFileChunk  {-# UNPACK #-} !ByteCount
+    | HashFileEnd    {-# UNPACK #-} !FileHash
 
 data HashFileTreeProgress = HashFileTreeProgress
     { hftpFileCurrent :: Maybe FilePath
