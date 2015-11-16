@@ -33,7 +33,11 @@ testHashFile = do
 testCalculateDiskUsage :: IO ()
 testCalculateDiskUsage = do
     --count <- calculateDiskUsage' (every 0.5 >-> terminalMonitor) "/public/jsk"
-    _ <- calculateDiskUsageIO "/home" monitor
+    --_ <- calculateDiskUsageIO "/public" monitor
+    --_ <- calculateDiskUsageZ "/public"
+    --_ <- calculateDiskUsageOld "/public"
+    --_ <- calculateDiskUsageDirectly "/public"
+    _ <- calculateDiskUsageDrain "/public"
     return ()
 
 testCountDescendantFiles :: IO ()
@@ -50,7 +54,7 @@ testNewStyle = do
 main :: IO ()
 main = do
     S.hSetBuffering S.stdout S.NoBuffering
-    testHashFile
-    --testCalculateDiskUsage
+    --testHashFile
+    testCalculateDiskUsage
     --testHashFile
     --testHashFileTree

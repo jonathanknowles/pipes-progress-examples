@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -233,18 +234,7 @@ data DataTransferProgress = DataTransferProgress
     deriving Show
 
 dataTransferProgress = DataTransferProgress
-{--
-copyFile
-    :: Monitor FileCopyProgress
-    -> FilePath
-    -> FilePath
-    -> IO ()
-copyFile m s t =
-    S.withFile (BC.unpack s) S.ReadMode $ \i ->
-    S.withFile (BC.unpack t) S.WriteMode $ \o ->
-    getFileSize s >>= \b ->
-        transferData (P.map (fmap $ fileCopyProgress b) >-> m) i o
---}
+
 data FileCopyProgress = FileCopyProgress
     { fcpBytesCopied    :: ByteCount
     , fcpBytesRemaining :: ByteCount }
@@ -254,17 +244,7 @@ fileCopyProgress :: ByteCount -> DataTransferProgress -> FileCopyProgress
 fileCopyProgress limit p = FileCopyProgress
     { fcpBytesCopied    =         dtpBytesTransferred p
     , fcpBytesRemaining = limit - dtpBytesTransferred p }
-{--
-hashFileOld
-    :: Monitor FileHashProgress
-    -> FilePath
-    -> IO FileHash
-hashFileOld m f =
-    S.withFile (BC.unpack f) S.ReadMode $ \i ->
-    getFileSize f >>= \b ->
-    PP.withMonitor (P.map (fmap $ fileHashProgress b) >-> m) 0 (F.purely P.scan byteCounter) $ \p ->
-        hashFileChunksP $ PB.fromHandle i >-> p
---}
+
 data FileHashProgress = FileHashProgress
     { fhpBytesHashed    :: ByteCount
     , fhpBytesRemaining :: ByteCount }
@@ -336,29 +316,10 @@ streamFileTree = PN.flatten . PN.nest (PF.descendantFiles PF.RootToLeaf) readFil
 
 hashFileTree :: FilePath -> IO FileHash
 hashFileTree = PS.runSafeT . hashFileStream . streamFileTree
-{--
-hashFileTree'
-    :: Monitor FileTreeHashProgress
-    -> FilePath
-    -> IO FileHash
-hashFileTree' m f = PS.runSafeT $
-    PP.withMonitor m initialFileTreeHashProgress (F.purely P.scan foldFileTreeHashProgress) $ \p ->
-        hashFileStream (streamFileTree f >-> p)
---}
+
 hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
 hashFileStream = hashFileHashesP . PN.foldStreams SHA256.foldChunks
-{--
-calculateDiskUsageOld'
-    :: Monitor FileByteCount
-    -> FilePath
-    -> IO (Maybe FileByteCount)
-calculateDiskUsageOld' m f = PS.runSafeT $
-    PP.withMonitor m initialFileByteCount P.cat $ \p ->
-        P.last $ PF.descendantFiles PF.RootToLeaf f
-            >-> P.mapM (liftIO . getFileSize . PF.filePath)
-            >-> F.purely P.scan foldFileByteCount
-            >-> p
---}
+
 calculateDiskUsageOld
     :: FilePath
     -> IO FileByteCount
@@ -454,6 +415,14 @@ drain = runEffect . (>-> P.drain)
 mscan :: (Monad m, Monoid a) => Pipe a a m r
 mscan = F.purely P.scan F.mconcat
 
+mscan' :: (Monad m, Monoid a) => Pipe a a m r
+mscan' = loop mempty where
+    loop !a = yield a >> await >>= loop . (a <>)
+{-# INLINE mscan' #-}
+
+mfold :: (Monad m, Monoid a) => Producer a m () -> m a
+mfold = F.purely P.fold F.mconcat
+
 ---------------------------------------------------------------------------------------------
 -- Recursively calculate the numbers of directories, files and bytes within a given directory
 ---------------------------------------------------------------------------------------------
@@ -480,12 +449,20 @@ directoryFileByteCount info = case PF.fileType info of
     _            -> pure   z
     where z = mempty
 
+descendantCounts :: MonadSafe m => FilePath -> Producer DirectoryFileByteCount m ()
+descendantCounts path = PF.descendants PF.RootToLeaf path >-> P.mapM directoryFileByteCount
+
+calculateDiskUsageDrain :: FilePath -> IO DirectoryFileByteCount
+calculateDiskUsageDrain = PS.runSafeT . drain . calculateDiskUsageY
+
 calculateDiskUsageY :: MonadSafe m
     => FilePath -> Producer DirectoryFileByteCount m DirectoryFileByteCount
-calculateDiskUsageY path = returnLastProduced mempty
-    (PF.descendants PF.RootToLeaf path
-        >-> P.mapM directoryFileByteCount
-        >-> mscan)
+calculateDiskUsageY path = returnLastProduced mempty (descendantCounts path >-> mscan)
+
+calculateDiskUsageDirectly
+    :: FilePath
+    -> IO DirectoryFileByteCount
+calculateDiskUsageDirectly path = PS.runSafeT $ mfold (descendantCounts path)
 
 calculateDiskUsageP :: (MonadBaseControl IO m, MonadSafe m)
     => FilePath
