@@ -50,6 +50,7 @@ import qualified Pipes.Safe                     as PS
 import qualified Pipes.Safe.Prelude             as PS
 import qualified System.IO                      as S
 import qualified System.Posix.Files.ByteString  as S
+import qualified Text.Pretty                    as TP
 
 type FileChunk = ByteString
 type FileHash  = SHA256
@@ -83,20 +84,6 @@ instance (Real a, Show a) => Pretty (Percent a) where
             ((100.0 * realToFrac a)
                     / realToFrac b)) <> "%"
 
-prettyInteger :: (Num a, Ord a, Show a) => a -> Text
-prettyInteger a =
-    if a < 0
-    then "-" <> prettyInteger (-a)
-    else T.reverse
-       $ T.intercalate ","
-       $ T.chunksOf 3
-       $ T.reverse
-       $ T.pack
-       $ show a
-
-instance Pretty Integer where
-    pretty = prettyInteger
-
 instance Pretty (ByteCount, ByteCount) where
     pretty (ByteCount a, ByteCount b) =
         pretty (fromIntegral a :: Integer) <> " / " <>
@@ -104,7 +91,7 @@ instance Pretty (ByteCount, ByteCount) where
 
 instance Pretty ByteCount where
     pretty (ByteCount a) =
-        prettyInteger a <> " " <>
+        TP.prettyInteger a <> " " <>
             if a == 1 || a == -1
                 then "byte"
                 else "bytes"
@@ -170,11 +157,8 @@ instance Pretty a => Pretty (Maybe a) where
     pretty (Nothing) = T.pack "<nothing>"
     pretty (Just x) = pretty x
 
-instance Pretty String where
-    pretty = T.pack
-
 instance Pretty W.Word64 where
-        pretty = T.pack . show
+    pretty = T.pack . show
 
 getFileSize :: FilePath -> IO ByteCount
 getFileSize = fmap (fromIntegral . S.fileSize) . S.getFileStatus
