@@ -4,30 +4,29 @@
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE ExistentialQuantification  #-}
 
 module Pipes.Progress.Examples where
 
-import Control.Foldl                   (Fold (..), FoldM (..))
-import Control.Monad                   (forever)
-import Control.Monad.Trans             (MonadIO, liftIO)
-import Control.Monad.Trans.Control     (MonadBaseControl)
-import Crypto.Hash.SHA256.Extra        (SHA256, foldChunks, foldHashes)
-import Data.ByteString                 (ByteString)
-import Data.Monoid                     ((<>))
-import Data.Text                       (Text)
-import Pipes                           ((>->), (<-<), Consumer, Pipe, Producer, Proxy, await, for, runEffect, yield)
-import Pipes.Core                      ((<\\), respond)
-import Pipes.FileSystem                (isFile, FileInfo)
-import Pipes.Nested                    (StreamEvent (..))
-import Pipes.Progress                  (Monitor (..), Signal (..), TimePeriod (..), runMonitoredEffect)
-import Pipes.Safe                      (MonadSafe, SafeT)
-import Pipes.Termination
-import Prelude                  hiding (FilePath, readFile)
-import System.IO                       (IOMode, Handle)
-import System.Posix.ByteString         (RawFilePath)
-import Text.Printf                     (printf)
-import Text.Pretty                     (Pretty, pretty)
+import Control.Foldl               (Fold (..))
+import Control.Monad               (forever)
+import Control.Monad.Trans         (MonadIO, liftIO)
+import Control.Monad.Trans.Control (MonadBaseControl)
+import Crypto.Hash.SHA256.Extra    (SHA256, foldChunks, foldHashes)
+import Data.ByteString             (ByteString)
+import Data.Monoid                 ((<>))
+import Data.Text                   (Text)
+import Pipes                       ((>->), (<-<), Consumer, Pipe, Producer, Proxy, await, for, runEffect, yield)
+import Pipes.Core                  ((<\\), respond)
+import Pipes.FileSystem            (isFile, FileInfo)
+import Pipes.Progress              (Monitor (..), Signal (..), TimePeriod (..), runMonitoredEffect)
+import Pipes.Safe                  (MonadSafe, SafeT)
+import Pipes.Termination           (foldReturn, returnLastProduced, terminated)
+import System.IO                   (IOMode, Handle)
+import System.Posix.ByteString     (RawFilePath)
+import Text.Printf                 (printf)
+import Text.Pretty                 (Pretty, pretty)
+
+import Prelude hiding (FilePath)
 
 import qualified Control.Foldl                       as F
 import qualified Crypto.Hash.SHA256                  as SHA256
