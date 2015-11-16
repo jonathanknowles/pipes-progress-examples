@@ -127,14 +127,6 @@ instance Pretty DirectoryFileByteCount where
         , " ", "[",      "files: ", pretty dfbcFiles      , "]"
         , " ", "[",      "bytes: ", pretty dfbcBytes      , "]" ]
 
-instance Pretty FileTreeHashProgress where
-    pretty FileTreeHashProgress {..} = T.concat
-        [      "[", "files hashed: ", pretty fthpFilesHashed, "]"
-        , " ", "[", "bytes hashed: ", pretty fthpBytesHashed, "]"
-        , case fthpFileCurrent of
-            Nothing -> ""
-            Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
-
 instance Pretty HashFileProgress where
     pretty HashFileProgress {..} = T.concat
         [      "[",    "hashed: ", pretty hfpBytesHashed   , "]"
@@ -153,11 +145,6 @@ instance Pretty FilePath where
 
 instance Pretty FileCount where
     pretty (FileCount c) = pretty c
-
-instance Pretty FileByteCount where
-    pretty FileByteCount {..} = T.concat
-        [      "[", "bytes: ", pretty byteCount, "]"
-        , " ", "[", "files: ", pretty fileCount, "]" ]
 
 instance Pretty RichFileCopyProgress where
     pretty p = T.concat
@@ -210,9 +197,6 @@ updateProgress p t b = p
         nTransferRate  = 0.9 * rfcpTransferRate p
                        + 0.1 * transferRate (b - rfcpBytesCopied p) t
 
-silentMonitor :: (MonadSafe m, Pretty a) => Monitor a m
-silentMonitor = Monitor {monitor = forever await, monitorPeriod = 1.0}
-
 terminalMonitor :: (MonadSafe m, Pretty a) =>
     TimePeriod -> Monitor a m
 terminalMonitor monitorPeriod = Monitor {..} where
@@ -222,9 +206,6 @@ terminalMonitor monitorPeriod = Monitor {..} where
 
 returnToStart :: Text
 returnToStart = "\r\ESC[K"
-
-byteCounter :: F.Fold ByteString ByteCount
-byteCounter = F.Fold step 0 id where step i j = i + chunkLength j
 
 chunkLength :: ByteString -> ByteCount
 chunkLength = ByteCount . fromIntegral . B.length
@@ -320,41 +301,12 @@ hashFileTree = PS.runSafeT . hashFileStream . streamFileTree
 hashFileStream :: Monad m => Producer FileStreamEvent m () -> m FileHash
 hashFileStream = hashFileHashesP . PN.foldStreams SHA256.foldChunks
 
-calculateDiskUsageOld
-    :: FilePath
-    -> IO FileByteCount
-calculateDiskUsageOld f = PS.runSafeT $
-    F.purely P.fold foldFileByteCount $
-        PF.descendantFiles PF.RootToLeaf f
-            >-> P.mapM (liftIO . getFileSize)
-
 countDescendantFiles
     :: FilePath
     -> IO Int
 countDescendantFiles f = PS.runSafeT $
     P.length $
         PF.descendantFiles PF.RootToLeaf f
-
-data FileByteCount = FileByteCount
-    { fileCount :: {-# UNPACK #-} !FileCount
-    , byteCount :: {-# UNPACK #-} !ByteCount } deriving Show
-
-foldFileByteCount :: F.Fold ByteCount FileByteCount
-foldFileByteCount = F.Fold
-    updateFileByteCount
-    initialFileByteCount
-    id
-
-updateFileByteCount :: FileByteCount -> ByteCount -> FileByteCount
-updateFileByteCount p c = p
-    { fileCount = fileCount p + 1
-    , byteCount = byteCount p + c }
-{-# INLINE updateFileByteCount #-}
-
-initialFileByteCount :: FileByteCount
-initialFileByteCount = FileByteCount
-    { fileCount = 0
-    , byteCount = 0 }
 
 -- Experimental code below.
 
