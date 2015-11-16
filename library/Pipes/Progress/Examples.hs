@@ -581,8 +581,8 @@ data HashFileTreeProgressEvent
 
 data HashFileTreeProgress = HashFileTreeProgress
     { hftpFileCurrent :: Maybe FilePath
-    , hftpFilesHashed :: !FileCount
-    , hftpBytesHashed :: !ByteCount }
+    , hftpFilesHashed :: {-# UNPACK #-} !FileCount
+    , hftpBytesHashed :: {-# UNPACK #-} !ByteCount }
 
 updateHashFileTreeProgress :: HashFileTreeProgress -> HashFileTreeProgressEvent -> HashFileTreeProgress
 updateHashFileTreeProgress p = \case
