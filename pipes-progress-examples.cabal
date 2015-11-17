@@ -47,6 +47,7 @@ library
     ghc-options:
         -O3
         -threaded
+        -funbox-strict-fields
         -rtsopts
         -fprof-auto
         -with-rtsopts=-N
@@ -66,6 +67,7 @@ executable              pipes-progress-examples
     ghc-options:
         -O3
         -threaded
+        -funbox-strict-fields
         -rtsopts
         -with-rtsopts=-N
 
@@ -84,5 +86,6 @@ executable              pipes-progress-examples-profiled
         -O3
         -threaded
         -rtsopts
+        -funbox-strict-fields
         -fprof-auto
         "-with-rtsopts=-N -p -s -h -i0.1"

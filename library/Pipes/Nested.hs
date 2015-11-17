@@ -73,6 +73,6 @@ foldStreams :: Monad m
     -> Producer (StreamEvent o i) m r
     -> Producer j m r
 foldStreams f = F.purely P.folds f
-    . P.maps (>-> P.filterMap streamChunk)
+    . P.maps (>-> P.mapFilter streamChunk)
     . L.view (P.groupsBy' sameStream)
 
