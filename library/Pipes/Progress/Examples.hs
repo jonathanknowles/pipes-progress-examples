@@ -1,30 +1,35 @@
-{-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE TypeFamilies               #-}
 
-module Pipes.Progress.Examples where
+module Pipes.Progress.Examples
+    ( calculateDiskUsage
+    , copyFile
+    , copyTree
+    , hashFile
+    , hashTree
+    , terminalMonitor
+    ) where
 
-import Control.Foldl               (Fold (..))
-import Control.Monad               (forever)
-import Control.Monad.Trans         (MonadIO, liftIO)
-import Control.Monad.Trans.Control (MonadBaseControl)
-import Crypto.Hash.SHA256.Extra    (SHA256, foldChunks, foldHashes)
-import Data.ByteString             (ByteString)
-import Data.Monoid                 ((<>))
-import Data.Text                   (Text)
-import Pipes                       ((>->), (<-<), Consumer, Pipe, Producer, Proxy, await, for, runEffect, yield)
-import Pipes.Core                  ((<\\), respond)
-import Pipes.FileSystem            (isFile, FileInfo)
-import Pipes.Progress              (Monitor (..), Signal (..), TimePeriod (..), runMonitoredEffect)
-import Pipes.Safe                  (MonadSafe, SafeT)
-import Pipes.Termination           (foldReturn, returnLastProduced, terminated)
-import System.IO                   (IOMode, Handle)
-import System.Posix.ByteString     (RawFilePath)
-import Text.Printf                 (printf)
-import Text.Pretty                 (Pretty, pretty)
+import Control.Monad (forever)
+import Control.Monad.Trans (MonadIO, liftIO)
+import Crypto.Hash.SHA256.Extra (SHA256, foldChunks, foldHashes)
+import Data.ByteString (ByteString)
+import Data.Monoid ((<>))
+import Data.Text (Text)
+import Pipes ((>->), (<-<), Consumer, Pipe, Producer, Proxy, await, for, runEffect, yield)
+import Pipes.Core ((<\\), respond)
+import Pipes.FileSystem (isFile, FileInfo, FileType (..))
+import Pipes.Progress (Monitor (..), MonitorableEffect (..), TimePeriod (..), runMonitoredEffect)
+import Pipes.Safe (MonadSafe, SafeT)
+import Pipes.Termination (foldReturn, returnLastProduced, terminated)
+import System.IO (IOMode, Handle)
+import System.Posix.ByteString (RawFilePath)
+import Text.Pretty
+import Text.Printf (printf)
 
 import Prelude hiding (FilePath)
 
@@ -36,393 +41,305 @@ import qualified Data.ByteString.Char8               as BC
 import qualified Data.Text                           as T
 import qualified Data.Text.Encoding                  as T
 import qualified Data.Text.IO                        as T
-import qualified Data.Time.Human                     as H
 import qualified Data.Word                           as W
 import qualified Pipes                               as P
 import qualified Pipes.ByteString                    as PB
 import qualified Pipes.Extra                         as P
 import qualified Pipes.FileSystem                    as PF
-import qualified Pipes.Nested                        as PN
 import qualified Pipes.Prelude                       as P
 import qualified Pipes.Progress                      as PP
 import qualified Pipes.Safe                          as PS
 import qualified Pipes.Safe.Prelude                  as PS
 import qualified System.IO                           as S
+import qualified System.Posix.Directory.ByteString   as S
 import qualified System.Posix.Files.ByteString       as S
 import qualified System.Posix.Files.ByteString.Extra as S
-import qualified Text.Pretty                         as TP
+
+------------------------------------------------------------------------------
+-- * Types and functions relating to processes, states, and state transitions.
+------------------------------------------------------------------------------
+
+{-| Represents a class of state transitions for a given process. Values of
+    type 's' represent individual states, and values of type 'Transition s'
+    represent transitions between pairs of consecutive states.
+-}
+class Update s where
+    type Transition s
+    update :: s -> Transition s -> s
+
+----------------------------------------------------------------------
+-- * Types and functions relating to general file and data processing.
+----------------------------------------------------------------------
 
 type FileChunk = ByteString
 type FileHash  = SHA256
 type FilePath  = RawFilePath
 
-newtype DirectoryCount = DirectoryCount W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
-newtype FileCount      = FileCount      W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
 newtype ByteCount      = ByteCount      W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
+newtype DirectoryCount = DirectoryCount W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show, Pretty)
+newtype FileCount      = FileCount      W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show, Pretty)
 
-newtype TimeElapsed   = TimeElapsed   TimePeriod deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
-newtype TimeRemaining = TimeRemaining TimePeriod deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
+{-| Represents the current state of an operation that processes a single file. -}
+data ProcessFileProgress = ProcessFileProgress
+    { pfpBytesTarget    :: !(Maybe ByteCount)
+    , pfpBytesProcessed :: !       ByteCount}
 
-data Percent a = Percent a a
+{-| Represents a change of state during an operation that processes a file. -}
+data ProcessFileEvent
+    = ProcessFileStart ByteCount FilePath
+    | ProcessFileChunk ByteCount
 
-newtype TransferRate = TransferRate Double deriving (Enum, Eq, Fractional, Num, Ord, Real, RealFrac, Show)
+instance Update ProcessFileProgress where
+    type Transition ProcessFileProgress = ProcessFileEvent
+    update p = \case
+        ProcessFileStart size _ -> p { pfpBytesTarget = Just size }
+        ProcessFileChunk size   -> p { pfpBytesProcessed = pfpBytesProcessed p + size }
 
-transferRate :: ByteCount -> TimePeriod -> TransferRate
-transferRate (ByteCount b) (TimePeriod t) = TransferRate $ fromIntegral b / realToFrac t
-
-initProgress :: ByteCount -> RichFileCopyProgress
-initProgress bytesTarget = RichFileCopyProgress
-    { rfcpBytesCopied   = 0
-    , rfcpBytesTarget   = bytesTarget
-    , rfcpTimeElapsed   = 0
-    , rfcpTimeRemaining = 0
-    , rfcpTransferRate  = 0 }
-
-instance (Real a, Show a) => Pretty (Percent a) where
-    pretty (Percent a b) = T.pack
-        (show $ floor
-            ((100.0 * realToFrac a)
-                    / realToFrac b)) <> "%"
-
-instance Pretty (ByteCount, ByteCount) where
-    pretty (ByteCount a, ByteCount b) =
-        pretty (fromIntegral a :: Integer) <> " / " <>
-        pretty (fromIntegral b :: Integer) <> " bytes"
+instance Pretty FilePath where pretty = T.decodeUtf8
 
 instance Pretty ByteCount where
     pretty (ByteCount a) =
-        TP.prettyInteger a <> " " <>
+        prettyInteger a <> " " <>
             if a == 1 || a == -1
                 then "byte"
                 else "bytes"
 
-instance Pretty TransferRate where
-    pretty (TransferRate a) =
-        pretty (floor a :: Integer) <> " bytes/s"
-
-instance Pretty TimeElapsed where
-    pretty a = pretty $ H.Human 2 $ H.TimePeriod (floor a) H.Second
-
-instance Pretty TimeRemaining where
-    pretty a = pretty $ H.Human 2 $ H.TimePeriod (ceiling a) H.Second
-
-instance Pretty FileCopyProgress where
-    pretty FileCopyProgress {..} = T.concat
-        [      "[",   "copied: ", pretty fcpBytesCopied   , "]"
-        , " ", "[","remaining: ", pretty fcpBytesRemaining, "]" ]
-
-instance Pretty DirectoryCount where
-    pretty (DirectoryCount c) = pretty c
-
-instance Pretty DirectoryFileByteCount where
-    pretty DirectoryFileByteCount {..} = T.concat
-        [      "[","directories: ", pretty dfbcDirectories, "]"
-        , " ", "[",      "files: ", pretty dfbcFiles      , "]"
-        , " ", "[",      "bytes: ", pretty dfbcBytes      , "]" ]
-
-instance Pretty HashFileProgress where
-    pretty HashFileProgress {..} = T.concat
-        [      "[",    "hashed: ", pretty hfpBytesHashed   , "]"
-        , " ", "[", "remaining: ", pretty hfpBytesRemaining, "]" ]
-
-instance Pretty HashFileTreeProgress where
-    pretty HashFileTreeProgress {..} = T.concat
-        [      "[", "files hashed: ", pretty hftpFilesHashed, "]"
-        , " ", "[", "bytes hashed: ", pretty hftpBytesHashed, "]"
-        , case hftpFileCurrent of
+instance Pretty ProcessFileProgress where
+    pretty ProcessFileProgress {..} = T.concat
+        ["[", "processed: ", pretty pfpBytesProcessed, "]"
+        , case pfpBytesTarget of
             Nothing -> ""
-            Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
+            Just bt -> T.concat
+                [" ", "[", "remaining: ", pretty (bt - pfpBytesProcessed), "]" ] ]
 
-instance Pretty FilePath where
-    pretty = T.decodeUtf8
+openFile :: FilePath -> IOMode -> IO Handle
+openFile = S.openFile . BC.unpack
 
-instance Pretty FileCount where
-    pretty (FileCount c) = pretty c
-
-instance Pretty RichFileCopyProgress where
-    pretty p = T.concat
-        [      "[",               percentage, "]"
-        , " ", "[",               bytes     , "]"
-        , " ", "[",     "rate: ", rate      , "]"
-        , " ", "[",  "elapsed: ", elapsed   , "]"
-        , " ", "[","remaining: ", remaining , "]" ]
-        where
-            percentage  = pretty (Percent (rfcpBytesCopied p) (rfcpBytesTarget p))
-            bytes       = pretty (rfcpBytesCopied p, rfcpBytesTarget p)
-            rate        = pretty (rfcpTransferRate  p)
-            elapsed     = pretty (TimeElapsed   (rfcpTimeElapsed   p))
-            remaining   = pretty (TimeRemaining (rfcpTimeRemaining p))
-
-instance Pretty a => Pretty (Maybe a) where
-    pretty (Nothing) = T.pack "<nothing>"
-    pretty (Just x) = pretty x
-
-instance Pretty W.Word64 where
-    pretty = T.pack . show
-
-progressComplete :: RichFileCopyProgress -> Bool
-progressComplete p = rfcpBytesCopied p == rfcpBytesTarget p
-
-data RichFileCopyProgress = RichFileCopyProgress
-    { rfcpBytesCopied   :: ByteCount
-    , rfcpBytesTarget   :: ByteCount
-    , rfcpTimeElapsed   :: TimePeriod
-    , rfcpTimeRemaining :: TimePeriod   -- this should be Maybe
-    , rfcpTransferRate  :: TransferRate -- this should be Maybe
-    }
-
-updateProgress :: RichFileCopyProgress -> TimePeriod -> ByteCount -> RichFileCopyProgress
-updateProgress p t b = p
-    { rfcpBytesCopied   = nBytesCopied
-    , rfcpTimeElapsed   = nTimeElapsed
-    , rfcpTimeRemaining = nTimeRemaining
-    , rfcpTransferRate  = nTransferRate
-    } where
-        nBytesCopied   = b
-        nTimeElapsed   = rfcpTimeElapsed p + t
-        nTimeRemaining = realToFrac $ fromIntegral (rfcpBytesTarget p - b) / nTransferRate
-        nTransferRate  = 0.9 * rfcpTransferRate p
-                       + 0.1 * transferRate (b - rfcpBytesCopied p) t
+-----------------------------------------------------
+-- * Types and functions relating to terminal output.
+-----------------------------------------------------
 
 terminalMonitor :: (MonadSafe m, Pretty a) =>
     TimePeriod -> Monitor a m
 terminalMonitor monitorPeriod = Monitor {..} where
-    monitor = forever $ await >>= terminated
+    monitorTarget = forever $ await >>= terminated
         (liftIO $ T.putStrLn "")
         (liftIO . T.putStr . (returnToStart <>) . pretty)
 
 returnToStart :: Text
 returnToStart = "\r\ESC[K"
 
-chunkLength :: ByteString -> ByteCount
-chunkLength = ByteCount . fromIntegral . B.length
+---------------------------------------
+-- * Example: Copying individual files.
+---------------------------------------
 
-data DataTransferProgress = DataTransferProgress
-    { dtpBytesTransferred :: ByteCount }
-    deriving Show
+{-| Copy a single file from the specified source path to the specified
+    target path.
+-}
+copyFile :: MonadSafe m
+    => FilePath -- ^ The source path
+    -> FilePath -- ^ The target path
+    -> MonitorableEffect ProcessFileProgress m ()
+copyFile s t = MonitorableEffect
+    { effectStatusUpdates = P.scan update start id <-< copyFileInner s t
+    , effectStatusInitial = start }
+    where start = ProcessFileProgress Nothing 0
 
-dataTransferProgress = DataTransferProgress
+copyFileInner :: MonadSafe m =>
+    FilePath -> FilePath -> Producer ProcessFileEvent m ()
+copyFileInner source target = PS.bracket
+    (liftIO $ openFile source S.ReadMode)
+    (liftIO . S.hClose) $ \i -> PS.bracket
+        (liftIO $ openFile target S.WriteMode)
+        (liftIO . S.hClose) $ \o -> do
+            size <- liftIO $ S.getFileSize source
+            yield $ ProcessFileStart (fromIntegral size) source
+            PB.fromHandle i
+                >-> P.tee (PB.toHandle o)
+                >-> P.map (ProcessFileChunk . fromIntegral . B.length)
 
-data FileCopyProgress = FileCopyProgress
-    { fcpBytesCopied    :: ByteCount
-    , fcpBytesRemaining :: ByteCount }
-    deriving Show
+--------------------------------------
+-- * Example: Copying directory trees.
+--------------------------------------
 
-fileCopyProgress :: ByteCount -> DataTransferProgress -> FileCopyProgress
-fileCopyProgress limit p = FileCopyProgress
-    { fcpBytesCopied    =         dtpBytesTransferred p
-    , fcpBytesRemaining = limit - dtpBytesTransferred p }
+{-| Copy a directory tree from the specified source path to the
+    specified target path.
+-}
+copyTree :: MonadSafe m
+    => FilePath -- ^ The source path
+    -> FilePath -- ^ The target path
+    -> MonitorableEffect CopyTreeProgress m ()
+copyTree source target = MonitorableEffect
+    { effectStatusUpdates = P.scan update start id <-< copyTreeInner source target
+    , effectStatusInitial = start }
+        where
+    start = CopyTreeProgress Nothing 0 0 0
 
-readFile :: PS.MonadSafe m => FilePath -> Producer FileChunk m ()
-readFile path = PS.withFile (BC.unpack path) S.ReadMode PB.fromHandle
-
--- progress: [  0 %] [   0/1024 files] [   0  B/50.0 GB] [waiting]
--- progress: [ 10 %] [ 128/1024 files] [  50 MB/50.0 GB] [hashing "../some/very/big/file"]
--- progress: [ 50 %] [ 256/1024 files] [25.0 GB/50.0 GB] [hashing "../another/very/big/file"]
--- progress: [ 90 %] [ 512/1024 files] [45.0 GB/50.0 GB] [hashing "../a/tiny/file"]
--- progress: [100 %] [1024/1024 files] [50.0 GB/50.0 GB] [hashing complete]
-
--- Experimental code below.
-
--- Event-based:
---
--- fileTree     :: FilePath -> Producer FilePathEvent       IO ()
--- hashFile     :: FilePath -> Producer HashFileEvent       IO FileHash
--- hashFileTree :: FilePath -> Producer HashFileTreeEvent   IO FileTreeHash
--- diskUsage    :: FilePath -> Producer FileByteCount       IO FileByteCount
-
--- Signal-based:
-
--- hashFileS     :: FilePath -> Producer HashFileProgress     IO FileHash
--- hashFileTreeS :: FilePath -> Producer HashFileTreeProgress IO FileTreeHash
--- diskUsageS    :: FilePath -> Producer FileByteCount        IO FileByteCount
-
--- Maybe the signal based thing can just be a context-dependent fold
---
--- class EventToSignal E S | E -> S where
---     foldEvents :: Fold E S
---
--- Then we have:
---
--- usage <- diskUsage path >-> toSignal >-> samplePeriodically 1 >-> toConsole
--- hash <- hashFile path >-> toSignal >-> samplePeriodically 1 >-> toConsole
--- copyFile p q >-> samplePeriodically 1 >-> toConsole
-
--- Write a function:
---
--- samplePeriodically :: TimePeriod -> Producer Signal IO Result > Producer Signal IO Result
--- samplePeriodically :: TimePeriod -> Pipe Status Status IO Result
---
--- type EventSource e m r = Event e => Producer e m r
--- type SignalSource s m r = Signal s => Producer s m r
---
--- toSignal :: (Event e, Signal s) => Pipe e s m r
-
--- hashFile     :: FilePath -> FileHash
--- hashFileTree :: FilePath -> FileTreeHash
--- diskUsage    :: FilePath -> FileByteCount
---
--- maybe need some way to associate a timestamp with each moment
---
--- for each file in fileTree
---     yield $ FileOpen fileName
---     for each fileHashProgress in hashFile
---         yield $ FileRead size
---     yield $ FileClose fileName
---
--- perhaps the progress type could be combined with the result type?
-
-openFile :: FilePath -> IOMode -> IO Handle
-openFile = S.openFile . BC.unpack
-
----------------------------------------------------------------------------------------------
--- Recursively calculate the numbers of directories, files and bytes within a given directory
----------------------------------------------------------------------------------------------
-
-data DirectoryFileByteCount = DirectoryFileByteCount
-    { dfbcDirectories :: {-# UNPACK #-} !DirectoryCount
-    , dfbcFiles       :: {-# UNPACK #-} !FileCount
-    , dfbcBytes       :: {-# UNPACK #-} !ByteCount }
-
-instance Monoid DirectoryFileByteCount where
-    mempty = DirectoryFileByteCount 0 0 0
-    mappend (DirectoryFileByteCount d1 f1 b1)
-            (DirectoryFileByteCount d2 f2 b2)
-        = DirectoryFileByteCount (d1 + d2) (f1 + f2) (b1 + b2)
-
-directoryFileByteCount :: MonadIO m => FileInfo -> m DirectoryFileByteCount
-directoryFileByteCount info = case PF.fileType info of
-    PF.File   -> do s <- liftIO $ S.getFileSize $ PF.filePath info
-                    pure $ z { dfbcBytes       = s
-                             , dfbcFiles       = 1 }
-    PF.Directory -> pure $ z { dfbcDirectories = 1 }
-    _            -> pure   z
-    where z = mempty
-
-descendantCounts :: MonadSafe m => FilePath -> Producer DirectoryFileByteCount m ()
-descendantCounts path = PF.descendants PF.RootToLeaf path >-> P.mapM directoryFileByteCount
-
-calculateDiskUsageDrain :: FilePath -> IO DirectoryFileByteCount
-calculateDiskUsageDrain = PS.runSafeT . P.drainProducer . calculateDiskUsageY
-
-calculateDiskUsageY :: MonadSafe m
-    => FilePath -> Producer DirectoryFileByteCount m DirectoryFileByteCount
-calculateDiskUsageY path = returnLastProduced mempty (descendantCounts path >-> P.mscan)
-
-calculateDiskUsageDirectly
-    :: FilePath
-    -> IO DirectoryFileByteCount
-calculateDiskUsageDirectly path = PS.runSafeT $ P.mfold (descendantCounts path)
-
-calculateDiskUsageP :: (MonadBaseControl IO m, MonadSafe m)
-    => FilePath
-    -> Monitor DirectoryFileByteCount m
-    -> m DirectoryFileByteCount
-calculateDiskUsageP path = runMonitoredEffect Signal {..}
+copyTreeInner :: MonadSafe m
+    => FilePath -- ^ The source path
+    -> FilePath -- ^ The target path
+    -> Producer CopyTreeEvent m ()
+copyTreeInner s t =
+    for (PF.descendants PF.RootToLeaf s) $ \e -> do
+        let i = PF.filePath e
+            o = t </> relative s i
+        case PF.fileType e of
+            PF.Directory -> do
+                liftIO $ S.getFileStatus i
+                    >>= S.createDirectory o . S.fileMode
+                yield $ CopyTreeDirectory i
+            PF.File -> do
+                yield $ CopyTreeFileStart i
+                copyFileInner i o >-> P.map convert
+                yield CopyTreeFileEnd
     where
-        signalDefault = mempty
-        signal = calculateDiskUsageY path
+        a </> b = a <> "/" <> b
+        relative = B.drop . (+ 1) . B.length
+        convert = \case
+            ProcessFileStart s p -> CopyTreeFileStart p
+            ProcessFileChunk s   -> CopyTreeFileChunk s
 
-calculateDiskUsageIO
-    :: FilePath
-    -> Monitor DirectoryFileByteCount (SafeT IO)
-    -> IO DirectoryFileByteCount
-calculateDiskUsageIO path monitor = PS.runSafeT $ calculateDiskUsageP path monitor
+data CopyTreeEvent
+    = CopyTreeDirectory !FilePath
+    | CopyTreeFileStart !FilePath
+    | CopyTreeFileChunk !ByteCount
+    | CopyTreeFileEnd
 
----------------------
--- Hash a single file
----------------------
+instance Update CopyTreeProgress where
+    type Transition CopyTreeProgress = CopyTreeEvent
+    update a = \case
+        CopyTreeDirectory p -> a { ctpDirectoriesCopied = ctpDirectoriesCopied a + 1 }
+        CopyTreeFileStart p -> a { ctpFileCurrent       = Just p }
+        CopyTreeFileChunk c -> a { ctpBytesCopied       = ctpBytesCopied a + c }
+        CopyTreeFileEnd     -> a { ctpFilesCopied       = ctpFilesCopied a + 1
+                                 , ctpFileCurrent       = Nothing }
 
-type HashFileProgressEvent = ByteCount
+data CopyTreeProgress = CopyTreeProgress
+    { ctpFileCurrent       :: !(Maybe FilePath)
+    , ctpFilesCopied       :: !FileCount
+    , ctpBytesCopied       :: !ByteCount
+    , ctpDirectoriesCopied :: !DirectoryCount }
 
-data HashFileProgress = HashFileProgress
-    { hfpBytesHashed    :: {-# UNPACK #-} !ByteCount
-    , hfpBytesRemaining :: {-# UNPACK #-} !ByteCount }
+instance Pretty CopyTreeProgress where
+    pretty CopyTreeProgress {..} = T.concat
+        [      "[", "directories copied: ", pretty ctpDirectoriesCopied, "]"
+        ,      "[",       "files copied: ", pretty ctpFilesCopied      , "]"
+        , " ", "[",       "bytes copied: ", pretty ctpBytesCopied      , "]"
+        , case ctpFileCurrent of
+            Nothing -> ""
+            Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
 
-hashFileX :: MonadSafe m
-    => FilePath
-    -> Producer HashFileProgressEvent m FileHash
-hashFileX path = PS.bracket
+-------------------------------------
+-- * Example: Calculating disk usage.
+-------------------------------------
+
+{-| Calculate the disk space used by the file system object at the given
+    path, including all files and directories that are descendants of the
+    object. Returns 'mempty' if there is no file or directory at the given
+    file path.
+-}
+calculateDiskUsage :: MonadSafe m
+                   => FilePath -> MonitorableEffect DiskUsage m DiskUsage
+calculateDiskUsage path = MonitorableEffect
+    { effectStatusInitial = mempty
+    , effectStatusUpdates = returnLastProduced mempty $
+                            PF.descendants PF.RootToLeaf path
+                            >-> P.mapM du >-> P.mscan }
+    where du i = case PF.fileType i of
+            PF.File ->   do s <- liftIO $ S.getFileSize $ PF.filePath i
+                            pure $ mempty { duBytes       = s
+                                          , duFiles       = 1 }
+            PF.Directory -> pure $ mempty { duDirectories = 1 }
+            _            -> pure   mempty
+
+data DiskUsage = DiskUsage
+    { duDirectories :: !DirectoryCount
+    , duFiles       :: !FileCount
+    , duBytes       :: !ByteCount }
+
+instance Monoid DiskUsage where
+    mempty = DiskUsage 0 0 0
+    mappend (DiskUsage d1 f1 b1) (DiskUsage d2 f2 b2) =
+        DiskUsage (d1 + d2) (f1 + f2) (b1 + b2)
+
+instance Pretty DiskUsage where
+    pretty DiskUsage {..} = T.concat
+        [      "[","directories: ", pretty duDirectories, "]"
+        , " ", "[",      "files: ", pretty duFiles      , "]"
+        , " ", "[",      "bytes: ", pretty duBytes      , "]" ]
+
+-----------------------------------------------------
+-- * Example: Calculating hashes of individual files.
+-----------------------------------------------------
+
+{-| Calculate the hash of the file at the specified path. -}
+hashFile :: MonadSafe m => FilePath ->
+    MonitorableEffect ProcessFileProgress m FileHash
+hashFile path = MonitorableEffect
+    { effectStatusUpdates = hashFileInner path >-> P.scan update start id
+    , effectStatusInitial = start }
+        where start = ProcessFileProgress Nothing 0
+
+hashFileInner :: MonadSafe m => FilePath ->
+    Producer ProcessFileEvent m FileHash
+hashFileInner path = PS.bracket
     (liftIO $ openFile path S.ReadMode)
-    (liftIO . S.hClose) $ \h ->
+    (liftIO . S.hClose) $ \h -> do
+        size <- liftIO $ S.getFileSize path
+        yield $ ProcessFileStart size path
         F.purely foldReturn SHA256.foldChunks (PB.fromHandle h)
-            >-> P.map (fromIntegral . B.length)
+            >-> P.map (ProcessFileChunk . fromIntegral . B.length)
 
-hashFileZ :: FilePath -> IO FileHash
-hashFileZ = PS.runSafeT . P.drainProducer . hashFileX
+----------------------------------------------------
+-- * Example: Calculating hashes of directory trees.
+----------------------------------------------------
 
-hashFileP :: (MonadBaseControl IO m, MonadSafe m)
-    => FilePath
-    -> Monitor HashFileProgress m
-    -> m FileHash
-hashFileP path monitor = do
-    size <- liftIO $ S.getFileSize path
-    let signal = hashFileX path >-> F.purely P.scan (foldHashFileProgress size)
-    let signalDefault = initialHashFileProgress size
-    runMonitoredEffect Signal {..} monitor
+{-| Calculate the hash of the file system object at the specified
+    path by XOR-ing together the hashes of all the files that are
+    descendants of the specified object. Directories are ignored. -}
+hashTree :: MonadSafe m =>
+    FilePath -> MonitorableEffect HashTreeProgress m FileHash
+hashTree path = MonitorableEffect
+    { effectStatusUpdates = hashTreeInner path >-> P.scan update start id
+    , effectStatusInitial = start }
+    where start = HashTreeProgress Nothing 0 0
 
-initialHashFileProgress :: ByteCount -> HashFileProgress
-initialHashFileProgress = HashFileProgress 0
-
-foldHashFileProgress :: ByteCount -> Fold HashFileProgressEvent HashFileProgress
-foldHashFileProgress size = F.Fold
-    updateHashFileProgress (initialHashFileProgress size) id
-
-updateHashFileProgress :: HashFileProgress -> HashFileProgressEvent -> HashFileProgress
-updateHashFileProgress p e = p
-    { hfpBytesHashed    = hfpBytesHashed    p + e
-    , hfpBytesRemaining = hfpBytesRemaining p - e }
-
------------------------
--- Hash a tree of files
------------------------
-
-hashFileTreeX :: MonadSafe m
-    => FilePath
-    -> Producer HashFileTreeProgressEvent m FileHash
-hashFileTreeX p = foldReturn step mempty id stream where
-    step h (HashFileEnd g) = mappend h g
-    step h (            _) = h
+hashTreeInner :: MonadSafe m =>
+    FilePath -> Producer HashTreeEvent m FileHash
+hashTreeInner p = foldReturn update mempty id stream where
+    update h (HashTreeFileEnd g) = mappend h g
+    update h (                _) = h
     stream = for (PF.descendantFiles PF.RootToLeaf p) $ \p -> do
-        yield $ HashFileStart p
-        yield . HashFileEnd =<<
-            hashFileX p >-> P.map HashFileChunk
+        yield $ HashTreeFileStart p
+        yield . HashTreeFileEnd =<<
+            hashFileInner p >-> P.map convert
+    convert = \case
+        ProcessFileStart s p -> HashTreeFileStart p
+        ProcessFileChunk s   -> HashTreeFileChunk s
 
-hashFileTreeZ :: FilePath -> IO FileHash
-hashFileTreeZ = PS.runSafeT . P.drainProducer . hashFileTreeX
+data HashTreeProgress = HashTreeProgress
+    { htpFileCurrent :: !(Maybe FilePath)
+    , htpFilesHashed :: !FileCount
+    , htpBytesHashed :: !ByteCount }
 
-hashFileTreeP :: (MonadBaseControl IO m, MonadSafe m)
-    => FilePath
-    -> Monitor HashFileTreeProgress m
-    -> m FileHash
-hashFileTreeP path = runMonitoredEffect Signal {..}
-    where
-        signalDefault = initialHashFileTreeProgress
-        signal = hashFileTreeX path >-> F.purely P.scan foldHashFileTreeProgress
+instance Pretty HashTreeProgress where
+    pretty HashTreeProgress {..} = T.concat
+        [      "[",       "files hashed: ", pretty htpFilesHashed      , "]"
+        , " ", "[",       "bytes hashed: ", pretty htpBytesHashed      , "]"
+        , case htpFileCurrent of
+            Nothing -> ""
+            Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
 
-data HashFileTreeProgressEvent
-    = HashFileStart  {-# UNPACK #-} !FilePath
-    | HashFileChunk  {-# UNPACK #-} !ByteCount
-    | HashFileEnd    {-# UNPACK #-} !FileHash
+data HashTreeEvent
+    = HashTreeFileStart !FilePath
+    | HashTreeFileChunk !ByteCount
+    | HashTreeFileEnd   !FileHash
 
-data HashFileTreeProgress = HashFileTreeProgress
-    { hftpFileCurrent :: Maybe FilePath
-    , hftpFilesHashed :: {-# UNPACK #-} !FileCount
-    , hftpBytesHashed :: {-# UNPACK #-} !ByteCount }
-
-updateHashFileTreeProgress :: HashFileTreeProgress -> HashFileTreeProgressEvent -> HashFileTreeProgress
-updateHashFileTreeProgress p = \case
-    HashFileStart f -> p { hftpFileCurrent = Just f }
-    HashFileChunk c -> p { hftpBytesHashed = hftpBytesHashed p + c }
-    HashFileEnd   h -> p { hftpFileCurrent = Nothing
-                         , hftpFilesHashed = hftpFilesHashed p + 1 }
-
-foldHashFileTreeProgress :: F.Fold HashFileTreeProgressEvent HashFileTreeProgress
-foldHashFileTreeProgress = F.Fold
-    updateHashFileTreeProgress initialHashFileTreeProgress id
-
-initialHashFileTreeProgress = HashFileTreeProgress
-    { hftpFileCurrent = Nothing
-    , hftpFilesHashed = 0
-    , hftpBytesHashed = 0 }
+instance Update HashTreeProgress where
+    type Transition HashTreeProgress = HashTreeEvent
+    update a = \case
+        HashTreeFileStart f -> a { htpFileCurrent = Just f }
+        HashTreeFileChunk c -> a { htpBytesHashed = htpBytesHashed a + c }
+        HashTreeFileEnd   h -> a { htpFileCurrent = Nothing
+                                 , htpFilesHashed = htpFilesHashed a + 1 }
 

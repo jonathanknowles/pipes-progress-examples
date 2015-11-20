@@ -3,52 +3,64 @@
 module Main where
 
 import Pipes ((>->))
-import Pipes.Progress (Monitor)
+import Pipes.Progress (Monitor, MonitorableEffect (..), runMonitoredEffect, runSafeMonitoredEffect)
 import Pipes.Progress.Examples
 import Pipes.Safe (MonadSafe, runSafeT)
-import Text.Pretty (Pretty)
+import Text.Pretty
 
 import qualified Pipes.Prelude as P
 import qualified System.IO as S
 
-monitor :: (MonadSafe m, Pretty a) => Monitor a m
+monitor :: (MonadSafe m, Pretty s) => Monitor s m
 monitor = terminalMonitor 0.5
 
-testHashFileTree :: IO ()
-testHashFileTree = do
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/empty" monitor)
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/small" monitor)
-    Prelude.print =<< runSafeT (hashFileTreeP "/public/jsk/scratch/large" monitor)
+testHashTree :: IO ()
+testHashTree = do
+    putStrLn "hashing file trees"
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashTree "/public/jsk/scratch/empty")
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashTree "/public/jsk/scratch/small")
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashTree "/public/jsk/scratch/small2")
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashTree "/public/jsk/scratch/large")
 
 testHashFile :: IO ()
 testHashFile = do
-    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/small/1MiB"   monitor)
-    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/small/4MiB"   monitor)
-    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/small/16MiB"  monitor)
-    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/small/64MiB"  monitor)
-    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/large/256MiB" monitor)
-    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/large/512MiB" monitor)
-    Prelude.print =<< runSafeT (hashFileP "/public/jsk/scratch/large/1GiB" monitor)
+    putStrLn "Hashing files"
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashFile "/public/jsk/scratch/small/1MiB")
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashFile "/public/jsk/scratch/small/4MiB")
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashFile "/public/jsk/scratch/small/16MiB")
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashFile "/public/jsk/scratch/small/64MiB")
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashFile "/public/jsk/scratch/large/256MiB")
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashFile "/public/jsk/scratch/large/512MiB")
+    Prelude.print =<< runSafeMonitoredEffect monitor (hashFile "/public/jsk/scratch/large/1GiB")
+
+testCopyFile :: IO ()
+testCopyFile = do
+    putStrLn "Copying files"
+    runSafeMonitoredEffect monitor (copyFile "/public/jsk/scratch/small/1MiB" "/dev/null")
+    runSafeMonitoredEffect monitor (copyFile "/public/jsk/scratch/small/1MiB" "/dev/null")
+    runSafeMonitoredEffect monitor (copyFile "/public/jsk/scratch/small/4MiB" "/dev/null")
+    runSafeMonitoredEffect monitor (copyFile "/public/jsk/scratch/small/16MiB" "/dev/null")
+    runSafeMonitoredEffect monitor (copyFile "/public/jsk/scratch/small/64MiB" "/dev/null")
+    runSafeMonitoredEffect monitor (copyFile "/public/jsk/scratch/large/256MiB" "/dev/null")
+    runSafeMonitoredEffect monitor (copyFile "/public/jsk/scratch/large/512MiB" "/dev/null")
+    runSafeMonitoredEffect monitor (copyFile "/public/jsk/scratch/large/1GiB" "/dev/null")
+
+testCopyTree :: IO ()
+testCopyTree =
+    runSafeMonitoredEffect monitor (copyTree "/public/jsk/scratch/small" "/public/jsk/scratch/small2")
 
 testCalculateDiskUsage :: IO ()
 testCalculateDiskUsage = do
-    --count <- calculateDiskUsage' (every 0.5 >-> terminalMonitor) "/public/jsk"
-    --_ <- calculateDiskUsageIO "/public" monitor
-    --_ <- calculateDiskUsageZ "/public"
-    --_ <- calculateDiskUsageOld "/public"
-    --_ <- calculateDiskUsageDirectly "/public"
-    _ <- calculateDiskUsageDrain "/public"
+    putStrLn "Calculating disk usage"
+    _ <- runSafeMonitoredEffect monitor $ calculateDiskUsage "/public"
     return ()
-
-testNewStyle :: IO ()
-testNewStyle = do
-    hash <- hashFileZ "/public/jsk/scratch/large/1GiB"
-    Prelude.print hash
 
 main :: IO ()
 main = do
     S.hSetBuffering S.stdout S.NoBuffering
-    --testHashFile
-    testCalculateDiskUsage
-    --testHashFile
-    --testHashFileTree
+    --testCopyTree
+    --testHashTree
+    --testCalculateDiskUsage
+    testHashFile
+    testCopyFile
+    --
