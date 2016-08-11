@@ -6,12 +6,14 @@
 {-# LANGUAGE TypeFamilies               #-}
 
 module Pipes.Progress.Examples
-    ( calculateDiskUsage
+    ( -- * Creating 'Monitor' instances
+      terminalMonitor
+      -- * Creating 'MonitorableEffect' instances
+    , calculateDiskUsage
     , copyFile
     , copyTree
     , hashFile
     , hashTree
-    , terminalMonitor
     ) where
 
 import Control.Monad (forever)
@@ -55,9 +57,12 @@ import qualified System.Posix.Directory.ByteString   as S
 import qualified System.Posix.Files.ByteString       as S
 import qualified System.Posix.Files.ByteString.Extra as S
 
-------------------------------------------------------------------------------
--- * Types and functions relating to processes, states, and state transitions.
-------------------------------------------------------------------------------
+----------------------------------------------
+-- Supplementary types, classes and functions.
+----------------------------------------------
+
+-- Types and functions relating to processes, states, and state transitions.
+----------------------------------------------------------------------------
 
 {-| Represents a class of state transitions for a given process. Values of
     type 's' represent individual states, and values of type 'Transition s'
@@ -67,9 +72,8 @@ class Update s where
     type Transition s
     update :: s -> Transition s -> s
 
-----------------------------------------------------------------------
--- * Types and functions relating to general file and data processing.
-----------------------------------------------------------------------
+-- Types and functions relating to general file and data processing.
+--------------------------------------------------------------------
 
 type FileChunk = ByteString
 type FileHash  = SHA256
@@ -115,10 +119,19 @@ instance Pretty ProcessFileProgress where
 openFile :: FilePath -> IOMode -> IO Handle
 openFile = S.openFile . BC.unpack
 
------------------------------------------------------
--- * Types and functions relating to terminal output.
------------------------------------------------------
+----------------------------------------
+-- Example implementations of 'Monitor'.
+----------------------------------------
 
+{-| A simple 'Monitor' implementation that echoes status updates to the
+    the terminal at fixed intervals.
+
+    The length of each interval is defined by the 'TimePeriod' argument.
+
+    This implementation allows for early termination: if the underlying
+    effect completes before the current interval is complete, then the
+    monitor will echo the final status immediately without waiting.
+-}
 terminalMonitor :: (MonadSafe m, Pretty a) =>
     TimePeriod -> Monitor a m
 terminalMonitor monitorPeriod = Monitor {..} where
@@ -129,16 +142,58 @@ terminalMonitor monitorPeriod = Monitor {..} where
 returnToStart :: Text
 returnToStart = "\r\ESC[K"
 
----------------------------------------
--- * Example: Copying individual files.
----------------------------------------
+--------------------------------------------------
+-- Example implementations of 'MonitorableEffect'.
+--------------------------------------------------
+
+-- Example: Calculating disk usage.
+-----------------------------------
+
+{-| Calculate the disk space used by the file system object at the given
+    path, including all files and directories that are descendants of the
+    object.
+
+    Returns 'mempty' if there is no file or directory at the given file path.
+-}
+calculateDiskUsage :: MonadSafe m
+                   => FilePath -> MonitorableEffect DiskUsage m DiskUsage
+calculateDiskUsage path = MonitorableEffect
+    { effectStatusInitial = mempty
+    , effectStatusUpdates = returnLastProduced mempty $
+                            PF.descendants PF.RootToLeaf path
+                            >-> P.mapM du >-> P.mscan }
+    where du i = case PF.fileType i of
+            PF.File ->   do s <- liftIO $ S.getFileSize $ PF.filePath i
+                            pure $ mempty { duBytes       = s
+                                          , duFiles       = 1 }
+            PF.Directory -> pure $ mempty { duDirectories = 1 }
+            _            -> pure   mempty
+
+data DiskUsage = DiskUsage
+    { duDirectories :: !DirectoryCount
+    , duFiles       :: !FileCount
+    , duBytes       :: !ByteCount }
+
+instance Monoid DiskUsage where
+    mempty = DiskUsage 0 0 0
+    mappend (DiskUsage d1 f1 b1) (DiskUsage d2 f2 b2) =
+        DiskUsage (d1 + d2) (f1 + f2) (b1 + b2)
+
+instance Pretty DiskUsage where
+    pretty DiskUsage {..} = T.concat
+        [      "[","directories: ", pretty duDirectories, "]"
+        , " ", "[",      "files: ", pretty duFiles      , "]"
+        , " ", "[",      "bytes: ", pretty duBytes      , "]" ]
+
+-- Example: Copying individual files.
+-------------------------------------
 
 {-| Copy a single file from the specified source path to the specified
     target path.
 -}
 copyFile :: MonadSafe m
-    => FilePath -- ^ The source path
-    -> FilePath -- ^ The target path
+    => FilePath -- ^ source path
+    -> FilePath -- ^ target path
     -> MonitorableEffect ProcessFileProgress m ()
 copyFile s t = MonitorableEffect
     { effectStatusUpdates = P.scan update start id <-< copyFileInner s t
@@ -158,16 +213,15 @@ copyFileInner source target = PS.bracket
                 >-> P.tee (PB.toHandle o)
                 >-> P.map (ProcessFileChunk . fromIntegral . B.length)
 
---------------------------------------
--- * Example: Copying directory trees.
---------------------------------------
+-- Example: Copying directory trees.
+------------------------------------
 
 {-| Copy a directory tree from the specified source path to the
     specified target path.
 -}
 copyTree :: MonadSafe m
-    => FilePath -- ^ The source path
-    -> FilePath -- ^ The target path
+    => FilePath -- ^ source path
+    -> FilePath -- ^ target path
     -> MonitorableEffect CopyTreeProgress m ()
 copyTree source target = MonitorableEffect
     { effectStatusUpdates = P.scan update start id <-< copyTreeInner source target
@@ -176,8 +230,8 @@ copyTree source target = MonitorableEffect
     start = CopyTreeProgress Nothing 0 0 0
 
 copyTreeInner :: MonadSafe m
-    => FilePath -- ^ The source path
-    -> FilePath -- ^ The target path
+    => FilePath -- ^ source path
+    -> FilePath -- ^ target path
     -> Producer CopyTreeEvent m ()
 copyTreeInner s t =
     for (PF.descendants PF.RootToLeaf s) $ \e -> do
@@ -229,48 +283,8 @@ instance Pretty CopyTreeProgress where
             Nothing -> ""
             Just fc -> T.concat [" ", "[", "current: ", T.takeEnd 32 $ pretty fc, "]" ] ]
 
--------------------------------------
--- * Example: Calculating disk usage.
--------------------------------------
-
-{-| Calculate the disk space used by the file system object at the given
-    path, including all files and directories that are descendants of the
-    object. Returns 'mempty' if there is no file or directory at the given
-    file path.
--}
-calculateDiskUsage :: MonadSafe m
-                   => FilePath -> MonitorableEffect DiskUsage m DiskUsage
-calculateDiskUsage path = MonitorableEffect
-    { effectStatusInitial = mempty
-    , effectStatusUpdates = returnLastProduced mempty $
-                            PF.descendants PF.RootToLeaf path
-                            >-> P.mapM du >-> P.mscan }
-    where du i = case PF.fileType i of
-            PF.File ->   do s <- liftIO $ S.getFileSize $ PF.filePath i
-                            pure $ mempty { duBytes       = s
-                                          , duFiles       = 1 }
-            PF.Directory -> pure $ mempty { duDirectories = 1 }
-            _            -> pure   mempty
-
-data DiskUsage = DiskUsage
-    { duDirectories :: !DirectoryCount
-    , duFiles       :: !FileCount
-    , duBytes       :: !ByteCount }
-
-instance Monoid DiskUsage where
-    mempty = DiskUsage 0 0 0
-    mappend (DiskUsage d1 f1 b1) (DiskUsage d2 f2 b2) =
-        DiskUsage (d1 + d2) (f1 + f2) (b1 + b2)
-
-instance Pretty DiskUsage where
-    pretty DiskUsage {..} = T.concat
-        [      "[","directories: ", pretty duDirectories, "]"
-        , " ", "[",      "files: ", pretty duFiles      , "]"
-        , " ", "[",      "bytes: ", pretty duBytes      , "]" ]
-
------------------------------------------------------
--- * Example: Calculating hashes of individual files.
------------------------------------------------------
+-- Example: Calculating hashes of individual files.
+---------------------------------------------------
 
 {-| Calculate the hash of the file at the specified path. -}
 hashFile :: MonadSafe m => FilePath ->
@@ -290,9 +304,8 @@ hashFileInner path = PS.bracket
         F.purely foldReturn SHA256.foldChunks (PB.fromHandle h)
             >-> P.map (ProcessFileChunk . fromIntegral . B.length)
 
-----------------------------------------------------
--- * Example: Calculating hashes of directory trees.
-----------------------------------------------------
+-- Example: Calculating hashes of directory trees.
+--------------------------------------------------
 
 {-| Calculate the hash of the file system object at the specified
     path by XOR-ing together the hashes of all the files that are
