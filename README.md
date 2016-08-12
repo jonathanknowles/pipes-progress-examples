@@ -5,3 +5,7 @@ This package contains demonstration code and examples of how to use the [Pipes P
 
 All examples can be found within the [`Pipes.Progress.Examples`](https://github.com/jonathanknowles/pipes-progress-examples/blob/master/library/Pipes/Progress/Examples.hs) module.
 
+Building
+--------
+
+Requires the [pipes-filesystem](https://github.com/jonathanknowles/pipes-filesystem) package.
