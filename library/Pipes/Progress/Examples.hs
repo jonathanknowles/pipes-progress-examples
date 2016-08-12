@@ -134,8 +134,8 @@ openFile = S.openFile . BC.unpack
 -}
 terminalMonitor :: (MonadSafe m, Pretty a) =>
     TimePeriod -> Monitor a m
-terminalMonitor monitorPeriod = Monitor {..} where
-    monitorTarget = forever $ await >>= terminated
+terminalMonitor monitorStatusPeriod = Monitor {..} where
+    monitorStatusUpdates = forever $ await >>= terminated
         (liftIO $ T.putStrLn "")
         (liftIO . T.putStr . (returnToStart <>) . pretty)
 
