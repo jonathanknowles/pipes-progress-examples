@@ -99,7 +99,7 @@ instance Update ProcessFileProgress where
         ProcessFileStart size _ -> p { pfpBytesTarget = Just size }
         ProcessFileChunk size   -> p { pfpBytesProcessed = pfpBytesProcessed p + size }
 
-instance Pretty FilePath where pretty = T.decodeUtf8
+instance Pretty FilePath where pretty = decodeFilePath
 
 instance Pretty ByteCount where
     pretty (ByteCount a) =
@@ -117,7 +117,11 @@ instance Pretty ProcessFileProgress where
                 [" ", "[", "remaining: ", pretty (bt - pfpBytesProcessed), "]" ] ]
 
 openFile :: FilePath -> IOMode -> IO Handle
-openFile = S.openFile . BC.unpack
+openFile = S.openFile . T.unpack . decodeFilePath
+
+-- FIXME: Assume that file paths are UTF-8 encoded.
+decodeFilePath :: FilePath -> Text
+decodeFilePath = T.decodeUtf8
 
 ----------------------------------------
 -- Example implementations of 'Monitor'.
