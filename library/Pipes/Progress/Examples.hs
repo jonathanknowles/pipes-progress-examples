@@ -79,7 +79,7 @@ type FileChunk = ByteString
 type FileHash  = SHA256
 type FilePath  = RawFilePath
 
-newtype ByteCount      = ByteCount      W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show)
+newtype ByteCount      = ByteCount      W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show, Pretty)
 newtype DirectoryCount = DirectoryCount W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show, Pretty)
 newtype FileCount      = FileCount      W.Word64 deriving (Enum, Eq, Integral, Num, Ord, Real, Show, Pretty)
 
@@ -100,13 +100,6 @@ instance Update ProcessFileProgress where
         ProcessFileChunk size   -> p { pfpBytesProcessed = pfpBytesProcessed p + size }
 
 instance Pretty FilePath where pretty = decodeFilePath
-
-instance Pretty ByteCount where
-    pretty (ByteCount a) =
-        prettyInteger a <> " " <>
-            if a == 1 || a == -1
-                then "byte"
-                else "bytes"
 
 instance Pretty ProcessFileProgress where
     pretty ProcessFileProgress {..} = T.concat

@@ -15,11 +15,11 @@ instance Pretty a => Pretty (Maybe a) where
     pretty (Nothing) = T.pack "<nothing>"
     pretty (Just x) = pretty x
 
-instance Pretty W.Word64 where
-    pretty = T.pack . show
-
 instance Pretty String where
     pretty = T.pack
+
+instance Pretty W.Word64 where
+    pretty = prettyInteger
 
 instance Pretty Integer where
     pretty = prettyInteger
