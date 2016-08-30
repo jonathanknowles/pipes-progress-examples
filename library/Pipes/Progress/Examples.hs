@@ -103,7 +103,7 @@ instance Pretty FilePath where pretty = decodeFilePath
 
 instance Pretty ProcessFileProgress where
     pretty ProcessFileProgress {..} = T.concat
-        ["[", "processed: ", pretty pfpBytesProcessed, "]"
+        [ "[", "processed: ", pretty pfpBytesProcessed, "]"
         , case pfpBytesTarget of
             Nothing -> ""
             Just bt -> T.concat
