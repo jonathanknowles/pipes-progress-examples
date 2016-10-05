@@ -1,0 +1,15 @@
+resolver: lts-6.10
+packages:
+  - '.'
+  - location:
+        git: git@github.com:/jonathanknowles/pipes-filesystem
+        commit: cb0ff620c08fa009d534992d869be6a6640b6bf7
+  - location:
+        git: git@github.com:/jonathanknowles/pipes-progress
+        commit: 0030b56e8bdd76901c8c68e047d82c19f6e89e44
+  - location:
+        git: git@github.com:/jonathanknowles/unix
+        commit: 119bbbe27f59bd0ef767fc3f93dd0aba5f70dbcc
+extra-deps: []
+flags: {}
+extra-package-dbs: []
