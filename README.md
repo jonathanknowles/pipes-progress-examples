@@ -8,4 +8,11 @@ All examples can be found within the [`Pipes.Progress.Examples`](https://github.
 Building
 --------
 
-Requires the [pipes-filesystem](https://github.com/jonathanknowles/pipes-filesystem) package.
+```
+stack build
+```
+
+Notes
+-----
+
+This package depends upon the [pipes-filesystem](https://github.com/jonathanknowles/pipes-filesystem) package.
